@@ -118,8 +118,12 @@ or set `SV_STREAM=raspberrypi.local` in `rig.env` for `tools/switchview.command`
 - Expect about 60–120 ms glass to glass on 5 GHz Wi-Fi, against about 30–50 ms
   for a card plugged straight into the computer. Ethernet on the Pi helps
   further. The service turns off the Pi's Wi-Fi power saving.
-- A lost packet shows as a smear until the next keyframe (`GOP`, one second by
-  default). If the picture stutters, lower `BITRATE`.
+- Keyframes come every 10 s (`GOP`) because the Pi encoder makes them very large;
+  `QMIN` keeps them from overflowing its buffer. A lost packet shows as a smear
+  until the next one, but pacing (`PACE_MBPS`) makes loss rare.
+- If the Pi reports under-voltage (`vcgencmd get_throttled`), it throttles and
+  the picture stalls: use a 5.1 V / 3 A supply or a powered hub for the card.
+  `OUT_FPS=30` halves the encoder's work in the meantime.
 - Audio over Wi-Fi keeps at least 80 ms queued (`-l` raises it further).
 - `python3 pi/sv_stream_relay.py --test` streams a test pattern and tone from
   any machine with ffmpeg and libx264, which is handy for checking the

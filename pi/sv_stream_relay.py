@@ -146,7 +146,13 @@ def ffmpeg_cmd(test):
     fps = env("FPS", "60")
     size = env("SIZE", "1280x720")
     bitrate = env("BITRATE", "6M")
-    gop = env("GOP", fps)  # one keyframe a second bounds artefacts after packet loss
+    # Encoded rate; lower than FPS drops frames before the encoder, e.g. a card
+    # that only offers 720p at 60 streamed at 30 to halve the encoder's work.
+    out_fps = env("OUT_FPS", fps)
+    # Keyframes every 10 s by default. The Pi encoder spends about a second's
+    # bit budget on each one (several hundred KB on a static screen), which
+    # stalls it; a new viewer still gets one at once (ffmpeg restarts).
+    gop = env("GOP", str(round(float(out_fps) * 10)))
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", env("LOGLEVEL", "warning"), "-nostdin"]
 
     if test:
@@ -182,8 +188,15 @@ def ffmpeg_cmd(test):
             vcodec += ["-pix_fmt", env("PIX_FMT", "")]
 
     cmd += ["-map", "0:v"] + (["-map", "1:a"] if have_audio else [])
+    if out_fps != fps:
+        cmd += ["-vf", f"fps={out_fps}"]
     cmd += vcodec + ["-b:v", bitrate, "-g", gop, "-bf", "0",
                      "-fps_mode", "passthrough"]
+    # Quantizer floor. The Pi encoder ignores -b:v in practice and keeps raising
+    # keyframe quality until frames overflow its ~690 KB output buffer and are
+    # cut short (a corrupt band at the bottom); qmin 30 keeps them well under.
+    if env("QMIN", "30") != "0":
+        cmd += ["-qmin", env("QMIN", "30")]
     cmd += shlex.split(env("EXTRA_VIDEO_ARGS", ""))
     if have_audio:
         cmd += ["-c:a", "libopus", "-application", "lowdelay", "-frame_duration", "10",
