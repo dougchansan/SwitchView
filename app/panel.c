@@ -77,10 +77,11 @@ static const struct quick QUICK[] = {
   {"SB Direct", "goto_smilebasic.lua", Q_NAV, 0, {867, 64, 122, 34}},
   {"HTTP Console", "goto_console.lua", Q_NAV, 0, {999, 64, 122, 34}},
   {"NS2 Run", "smilebasic_runner.lua", Q_NAV, 0, {1131, 64, 124, 34}},
-  {"Sleep/Wake", "toggle", Q_POWER, 0, {735, 106, 122, 34}},
-  {"Boot", "boot", Q_POWER, 0, {867, 106, 122, 34}},
-  {"Restart", "restart", Q_POWER, 1, {999, 106, 122, 34}},
-  {"Power Off", "off", Q_POWER, 1, {1131, 106, 124, 34}},
+  {"Sleep/Wake", "toggle", Q_POWER, 0, {735, 106, 100, 34}},
+  {"Boot", "boot", Q_POWER, 0, {840, 106, 100, 34}},
+  {"Power Menu", "menu", Q_POWER, 0, {945, 106, 100, 34}},
+  {"Hard Restart", "restart", Q_POWER, 1, {1050, 106, 100, 34}},
+  {"Power Off", "off", Q_POWER, 1, {1155, 106, 100, 34}},
 };
 #define NQUICK (sizeof QUICK / sizeof QUICK[0])
 #define CONFIRM_MS 3000
