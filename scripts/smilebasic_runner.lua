@@ -149,15 +149,27 @@ local function last_host()
 end
 
 -- Only reuse an address this PC still has; a stale one from another network
--- would make the host fail to bind.
+-- would make the host fail to bind. `ip` on Linux, `ifconfig` on macOS.
 local function local_ip(ip)
-  return sh("ip -4 -o addr show scope global"):find("inet " .. ip .. "/", 1, true) ~= nil
+  local out = sh("ip -4 -o addr show scope global 2>/dev/null; ifconfig 2>/dev/null")
+  return out:find("inet " .. ip .. "/", 1, true) ~= nil or out:find("inet " .. ip .. " ", 1, true) ~= nil
+end
+
+-- This PC's address on the network its default route uses: the one a console
+-- on the same LAN can reach.
+local function default_ip()
+  local ip = first_line("ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \\([0-9.]*\\).*/\\1/p'")
+  if ip and ip ~= "" then return ip end
+  local ifc = first_line("route -n get default 2>/dev/null | awk '/interface:/{print $2}'")
+  if ifc and ifc ~= "" then ip = first_line("ipconfig getifaddr " .. ifc .. " 2>/dev/null") end
+  if ip and ip ~= "" then return ip end
+  return nil
 end
 
 local HOST = os.getenv("NS2_HOST")
 if not HOST or HOST == "" then
   HOST = last_host()
-  if not HOST or not local_ip(HOST) then HOST = "10.42.0.1" end
+  if not HOST or not local_ip(HOST) then HOST = default_ip() or "10.42.0.1" end
 end
 
 -- Forward new lines from the host's own output into the script log, so the
@@ -202,18 +214,24 @@ local function waiting_run()
   return found
 end
 
+-- Linux (ss, /proc) first, macOS (lsof, kill -0) as the fallback.
 local function listener_pid()
-  return tonumber(sh("ss -Hltnp 'sport = :" .. PORT .. "'"):match("pid=(%d+)"))
+  local pid = tonumber(sh("ss -Hltnp 'sport = :" .. PORT .. "' 2>/dev/null"):match("pid=(%d+)"))
+  return pid or tonumber(first_line("lsof -nP -iTCP:" .. PORT .. " -sTCP:LISTEN -t 2>/dev/null") or "")
 end
 
 local function alive(pid)
-  return pid ~= nil and first_line("readlink /proc/" .. pid .. "/exe") ~= nil
+  if pid == nil then return false end
+  if first_line("readlink /proc/" .. pid .. "/exe 2>/dev/null") ~= nil then return true end
+  return os.execute("kill -0 " .. pid .. " 2>/dev/null") == true
 end
 
 -- True when a listener is the copy this script starts (its working directory
--- is the vendored host folder).
+-- is the host folder).
 local function our_host(pid)
-  return first_line("readlink /proc/" .. pid .. "/cwd") == hostdir
+  local cwd = first_line("readlink /proc/" .. pid .. "/cwd 2>/dev/null")
+  if not cwd then cwd = first_line("lsof -a -p " .. pid .. " -d cwd -Fn 2>/dev/null | sed -n 's/^n//p'") end
+  return cwd == hostdir
 end
 
 -- Stop the host this script started, or a leftover copy from an earlier run.
