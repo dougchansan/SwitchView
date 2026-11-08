@@ -1,0 +1,18 @@
+[Unit]
+Description=SwitchView capture card stream over Wi-Fi
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=-/etc/default/switchview-stream
+# Wi-Fi power saving adds tens of ms of jitter; turn it off (as root, ignore errors).
+ExecStartPre=+-/usr/sbin/iw dev wlan0 set power_save off
+ExecStart=/usr/bin/python3 /usr/local/lib/switchview/sv_stream_relay.py
+DynamicUser=yes
+SupplementaryGroups=video audio
+Nice=-5
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

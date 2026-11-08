@@ -1,7 +1,6 @@
 // SwitchView: low-latency Elgato capture viewer + Pro Controller / keyboard
 // command panel driving a Pico 2 W that is plugged into the Switch 2 dock.
 #include <SDL2/SDL.h>
-#include <linux/videodev2.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -23,51 +22,70 @@ static void usage(const char *argv0)
 {
   fprintf(stderr,
           "usage: %s [options]\n"
-          "  -d DEV     video device (default /dev/video0)\n"
-          "  -a PCM     ALSA capture device (default hw:CARD=S,DEV=0)\n"
+          "  -d DEV     video device: index, name or /dev/videoN (default 0)\n"
+          "  -a DEV     audio input (default: the capture card's input)\n"
           "  -s WxH     capture size (default 1920x1080)\n"
           "  -r FPS     frame rate (default 60)\n"
-          "  -p FMT     pixel format: nv12 | yuyv (default nv12)\n"
+          "  -p FMT     pixel format: nv12 | yuyv (default nv12; macOS: nv12 only)\n"
           "  -l MS      max audio queue in ms before dropping (default 20)\n"
           "  -H HOST    Pico address (default 192.168.4.60); 'none' disables the link\n"
           "  -P PORT    Pico UDP port (default %d)\n"
+          "  -S HOST[:PORT]  watch the Raspberry Pi Wi-Fi stream instead of a local card\n"
+          "             (e.g. raspberrypi.local; default port %d)\n"
           "  -v         enable vsync (no tearing, up to +1 frame latency)\n"
           "  -f         start fullscreen (video only)\n"
           "  -n         no audio\n"
           "  -m SCALE   mouse sensitivity sent to the Switch (default 1.0)\n"
           "  -V         print stats every second\n"
+          "  -L         list capture devices and inputs, then exit\n"
           "keys: F11 fullscreen (hides panel), Ctrl+Q quit, Enter focus text box, Esc back to pad\n"
           "mouse: click the video to send the mouse to the Switch; Esc gives it back\n"
           "pad:  WASD left stick, arrows right stick, TFGH d-pad, IJKL = X Y B A,\n"
           "      Q/E = L/R, 1/3 = ZL/ZR, Z/C = L3/R3, -/= minus/plus, P home, M capture\n"
           "mouse: left = hold, right = latch (toggle)\n",
-          argv0, SV_PORT);
+          argv0, SV_PORT, SV_STREAM_PORT);
 }
 
 int main(int argc, char **argv)
 {
   struct capture_opts co = {.video_dev = "/dev/video0", .audio_dev = "hw:CARD=S,DEV=0",
                             .width = 1920, .height = 1080, .fps = 60,
-                            .fourcc = V4L2_PIX_FMT_NV12, .audio_max_ms = 20};
+                            .format = SV_PIX_NV12, .audio_max_ms = 20,
+                            .stream_port = SV_STREAM_PORT};
   const char *host = "192.168.4.60";
   int port = SV_PORT, vsync = 0, fullscreen = 0, verbose = 0;
   float mouse_scale = 1.0f;
   int c;
-  while ((c = getopt(argc, argv, "d:a:s:r:p:l:H:P:m:vfnVh")) != -1) {
+  while ((c = getopt(argc, argv, "d:a:s:r:p:l:H:P:S:m:vfnVLh")) != -1) {
     switch (c) {
     case 'd': co.video_dev = optarg; break;
     case 'a': co.audio_dev = optarg; break;
     case 's': if (sscanf(optarg, "%dx%d", &co.width, &co.height) != 2) { usage(argv[0]); return 1; } break;
     case 'r': co.fps = atoi(optarg); break;
-    case 'p': co.fourcc = !strcmp(optarg, "yuyv") ? V4L2_PIX_FMT_YUYV : V4L2_PIX_FMT_NV12; break;
+    case 'p': co.format = !strcmp(optarg, "yuyv") ? SV_PIX_YUYV : SV_PIX_NV12; break;
     case 'l': co.audio_max_ms = atoi(optarg); break;
     case 'H': host = optarg; break;
+    case 'S': {
+      // HOST, HOST:PORT, or [IPv6]:PORT.
+      static char sh[256];
+      snprintf(sh, sizeof sh, "%s", optarg[0] == '[' ? optarg + 1 : optarg);
+      char *port_sep = optarg[0] == '[' ? strstr(sh, "]") : strchr(sh, ':');
+      if (optarg[0] != '[' && port_sep && strchr(port_sep + 1, ':')) port_sep = NULL;  // bare IPv6
+      if (port_sep) {
+        if (port_sep[0] == ']') { *port_sep++ = 0; }
+        if (port_sep[0] == ':') co.stream_port = atoi(port_sep + 1);
+        *port_sep = 0;
+      }
+      co.stream_host = sh;
+      break;
+    }
     case 'P': port = atoi(optarg); break;
     case 'm': mouse_scale = (float)atof(optarg); break;
     case 'v': vsync = 1; break;
     case 'f': fullscreen = 1; break;
     case 'n': co.no_audio = 1; break;
     case 'V': verbose = 1; break;
+    case 'L': capture_list_devices(); return 0;
     default: usage(argv[0]); return c != 'h';
     }
   }
@@ -90,6 +108,7 @@ int main(int argc, char **argv)
   SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED |
                                          (vsync ? SDL_RENDERER_PRESENTVSYNC : 0));
   if (!win || !ren) { fprintf(stderr, "SDL window/renderer: %s\n", SDL_GetError()); return 1; }
+  SDL_RaiseWindow(win);  // launched from a terminal: come to the front
   SDL_RendererInfo ri;
   SDL_GetRendererInfo(ren, &ri);
   fprintf(stderr, "render: %s, vsync %s\n", ri.name, vsync ? "on" : "off");
@@ -101,11 +120,10 @@ int main(int argc, char **argv)
 
   // Scripts live in SwitchView/scripts, next to app/ where the binary is.
   char script_dir[1024] = "scripts";
-  ssize_t en = readlink("/proc/self/exe", script_dir, sizeof script_dir - 16);
-  if (en > 0) {
-    script_dir[en] = 0;
-    char *slash = strrchr(script_dir, '/');
-    if (slash) strcpy(slash + 1, "../scripts");
+  char *base = SDL_GetBasePath();  // .../app/, however we were launched
+  if (base) {
+    snprintf(script_dir, sizeof script_dir, "%s../scripts", base);
+    SDL_free(base);
   }
   struct ocr *ocr = ocr_create(cap);
   struct script *script = script_create(ocr, script_dir);

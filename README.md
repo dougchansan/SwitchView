@@ -1,6 +1,6 @@
 # SwitchView
 
-A low-latency command center for the Nintendo Switch 2 on Linux.
+A low-latency command center for the Nintendo Switch 2 on Linux and macOS.
 
 SwitchView shows the console's screen and sound from a capture card, and puts
 a clickable Pro Controller, a keyboard, a mouse and a Lua scripting panel right
@@ -22,9 +22,10 @@ app drives it over Wi-Fi.
 
 ## Features
 
-- **Fast capture.** Raw NV12/YUYV frames straight from V4L2, always the newest
-  frame, colour conversion on the GPU, no vsync by default. Audio is read from
-  ALSA in 1 ms periods with a bounded output queue (~20 ms max).
+- **Fast capture.** Raw NV12/YUYV frames straight from V4L2 (Linux) or
+  AVFoundation (macOS), always the newest frame, colour conversion on the GPU,
+  no vsync by default. Audio is pulled in short chunks (ALSA on Linux, CoreAudio
+  on macOS) with a bounded output queue (~20 ms max).
 - **Pro Controller panel.** Click to hold, right-click to latch. Every button
   has a keyboard shortcut (hover a button for a second to see it), and a gamepad
   plugged into the PC is forwarded 1:1.
@@ -41,6 +42,7 @@ app drives it over Wi-Fi.
 | Part | Notes |
 |---|---|
 | Linux PC | Tested on Ubuntu with an AMD GPU (OpenGL renderer via SDL2). |
+| macOS | macOS 14 or newer, Apple Silicon or Intel. Any UVC capture card. |
 | USB capture card | Developed with an Elgato 4K S; any V4L2/UVC device offering NV12 or YUYV should work. |
 | Raspberry Pi Pico 2 W | Plugs into a USB port on the Switch 2 dock. |
 
@@ -54,13 +56,72 @@ can, and the PC does all the thinking.
 
 ```sh
 sudo apt install build-essential pkg-config libsdl2-dev libsdl2-ttf-dev \
-                 libasound2-dev libtesseract-dev tesseract-ocr-eng liblua5.4-dev
+                 libasound2-dev libtesseract-dev tesseract-ocr-eng liblua5.4-dev \
+                 libavformat-dev libavcodec-dev libswresample-dev
 make            # builds app/switchview
 make run
 ```
 
 Your user needs access to the capture device (`/dev/video0`, usually the
 `video` group) and the capture card's ALSA device.
+
+### macOS
+
+```sh
+brew install sdl2 sdl2_ttf tesseract lua ffmpeg
+make            # builds app/switchview: AVFoundation video, CoreAudio audio
+make run
+```
+
+No driver or kernel extension is needed for a UVC capture card. The first run
+asks for camera and microphone access for the terminal you launch it from;
+denying it leaves the window black. `make deps` runs the matching install
+command for your platform.
+
+### Wi-Fi capture with a Raspberry Pi 4
+
+Instead of plugging the capture card into the computer, plug it into a
+Raspberry Pi 4 by the dock. The Pi encodes the picture with its hardware H.264
+encoder and the sound with Opus, and the app receives both over Wi-Fi, so the
+laptop needs no cables at all.
+
+```
+ capture card ──USB 3── Pi 4 ──Wi-Fi (MPEG-TS/UDP)──▶ SwitchView -S
+```
+
+On the Pi (Raspberry Pi OS Bookworm or newer), from a copy of the `pi/` folder:
+
+```sh
+sudo ./install.sh
+```
+
+This installs ffmpeg, the relay (`/usr/local/lib/switchview/sv_stream_relay.py`)
+and a `switchview-stream` systemd service, and lists the capture devices it
+sees. The capture device, its sound card and the capture format (NV12, then
+YUYV, then MJPEG) are found automatically; `SIZE`, `FPS` and `BITRATE` live in
+`/etc/default/switchview-stream` (`sudo systemctl restart switchview-stream`
+after a change). The service log shows what was picked. On the computer:
+
+```sh
+./app/switchview -S raspberrypi.local     # or the Pi's IP address
+```
+
+- The app says hello to the Pi every half second and the stream comes back on
+  the same socket, so the Pi needs no address for the computer and no inbound
+  port needs opening. ffmpeg starts on the first hello and stops 15 s after
+  the last viewer leaves.
+- Use the **Pi 4's USB 3 (blue) ports** for the capture card. The Pi 4 encoder manages
+  1280x720@60 (default) or 1920x1080@30. A Pi 5 has no hardware H.264 encoder,
+  and a Pi 3 has only USB 2.
+- Expect about 60–120 ms glass to glass on 5 GHz Wi-Fi, against about 30–50 ms
+  for a card plugged straight into the computer. Ethernet on the Pi helps
+  further. The service turns off the Pi's Wi-Fi power saving.
+- A lost packet shows as a smear until the next keyframe (`GOP`, one second by
+  default). If the picture stutters, lower `BITRATE`.
+- Audio over Wi-Fi keeps at least 80 ms queued (`-l` raises it further).
+- `python3 pi/sv_stream_relay.py --test` streams a test pattern and tone from
+  any machine with ffmpeg and libx264, which is handy for checking the
+  network path without the card.
 
 ### Firmware
 
@@ -88,11 +149,19 @@ keyboard + mouse, `0` controller only, `2` keyboard only.
 | Option | |
 |---|---|
 | `-H HOST` | Pico address (default `192.168.4.60`; must match `SV_PICO_IP`) |
-| `-d DEV` / `-a PCM` | Capture video device / ALSA capture device |
-| `-s WxH`, `-r FPS`, `-p nv12\|yuyv` | Capture mode |
+| `-S HOST[:PORT]` | Watch the Raspberry Pi Wi-Fi stream instead of a local card (port 39384) |
+| `-d DEV` / `-a PCM` | Capture video device / audio input |
+| `-L` | List capture devices and audio inputs, then exit |
+| `-s WxH`, `-r FPS`, `-p nv12\|yuyv` | Capture mode (`yuyv` is Linux only) |
 | `-v` | Enable vsync (no tearing, up to one frame more latency) |
 | `-m SCALE` | Mouse sensitivity sent to the console |
 | `-f`, `-n`, `-V` | Start full screen, no audio, print stats |
+
+On Linux `-d` is a V4L2 node (`/dev/video0`) and `-a` an ALSA PCM
+(`hw:CARD=S,DEV=0`). On macOS `-d` is an index, part of the device name, or its
+unique ID — `-L` prints them — and `-a` is part of an audio input name. The
+macOS default picks the audio input that belongs to the capture card, so a USB
+card's HDMI sound is used without extra flags.
 
 | Key | Control |
 |---|---|
@@ -159,8 +228,9 @@ saved in slot 0.  Run folders and the host log go to
 
 | Path | |
 |---|---|
-| `app/` | SDL2 app: capture, panel UI, Pico link, OCR, Lua runner |
+| `app/` | SDL2 app: capture (`capture.c` V4L2/ALSA, `capture_macos.m` AVFoundation/CoreAudio, `capture_net.c` Pi stream), panel UI, Pico link, OCR, Lua runner |
 | `firmware/` | Pico 2 W firmware (TinyUSB composite device, lwIP UDP) |
+| `pi/` | Raspberry Pi 4 stream relay, systemd service and installer |
 | `proto/switchview_proto.h` | Wire protocol shared by the app and the firmware |
 | `scripts/` | Lua scripts |
 | `third_party/ns2jb/` | Local-only NS2 host folder (git-ignored, not distributed) |
@@ -180,6 +250,8 @@ picked up automatically.
 - [TinyUSB](https://github.com/hathach/tinyusb) by Ha Thach and contributors.
 - [Raspberry Pi Pico SDK](https://github.com/raspberrypi/pico-sdk),
   [lwIP](https://savannah.nongnu.org/projects/lwip/), CYW43 driver.
+- [FFmpeg](https://ffmpeg.org/) (libavformat/libavcodec, LGPL), used to decode
+  the Wi-Fi stream.
 - [SDL2](https://www.libsdl.org/) and SDL2_ttf, [ALSA](https://www.alsa-project.org/),
   [Tesseract OCR](https://github.com/tesseract-ocr/tesseract),
   [Lua](https://www.lua.org/).

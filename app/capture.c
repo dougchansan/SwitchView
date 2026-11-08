@@ -1,4 +1,4 @@
-#include "capture.h"
+#include "capture_impl.h"
 
 #include <alsa/asoundlib.h>
 #include <errno.h>
@@ -18,7 +18,8 @@
 
 struct vbuf { void *ptr; size_t len; };
 
-struct capture {
+struct lcap {
+  struct capture base;  // first: see capture_impl.h
   // video
   int fd;
   struct vbuf bufs[NBUF];
@@ -50,7 +51,7 @@ static int xioctl(int fd, unsigned long req, void *arg)
 
 static void *audio_thread(void *p)
 {
-  struct capture *c = p;
+  struct lcap *c = p;
   int16_t buf[64 * 2];
   while (atomic_load(&c->audio_running)) {
     // Timed wait so shutdown never hangs when the source sends no audio.
@@ -69,7 +70,7 @@ static void *audio_thread(void *p)
   return NULL;
 }
 
-static int audio_start(struct capture *c, const struct capture_opts *o)
+static int audio_start(struct lcap *c, const struct capture_opts *o)
 {
   int err;
   if ((err = snd_pcm_open(&c->pcm, o->audio_dev, SND_PCM_STREAM_CAPTURE, SND_PCM_NONBLOCK)) < 0) {
@@ -121,19 +122,20 @@ static int audio_start(struct capture *c, const struct capture_opts *o)
 
 /* ---------------- video ---------------- */
 
-static int video_open(struct capture *c, const struct capture_opts *o)
+static int video_open(struct lcap *c, const struct capture_opts *o)
 {
   c->fd = open(o->video_dev, O_RDWR | O_NONBLOCK);
   if (c->fd < 0) { perror(o->video_dev); return -1; }
 
+  unsigned want_fmt = o->format == SV_PIX_YUYV ? V4L2_PIX_FMT_YUYV : V4L2_PIX_FMT_NV12;
   struct v4l2_format fmt = {0};
   fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   fmt.fmt.pix.width = (unsigned)o->width;
   fmt.fmt.pix.height = (unsigned)o->height;
-  fmt.fmt.pix.pixelformat = o->fourcc;
+  fmt.fmt.pix.pixelformat = want_fmt;
   fmt.fmt.pix.field = V4L2_FIELD_NONE;
   if (xioctl(c->fd, VIDIOC_S_FMT, &fmt) < 0) { perror("VIDIOC_S_FMT"); return -1; }
-  if (fmt.fmt.pix.pixelformat != o->fourcc) {
+  if (fmt.fmt.pix.pixelformat != want_fmt) {
     fprintf(stderr, "video: device refused requested pixel format\n");
     return -1;
   }
@@ -175,7 +177,7 @@ static int video_open(struct capture *c, const struct capture_opts *o)
 }
 
 // Dequeue everything that is ready, keep only the newest buffer. Returns index or -1.
-static int video_grab_latest(struct capture *c)
+static int video_grab_latest(struct lcap *c)
 {
   int latest = -1;
   for (;;) {
@@ -192,7 +194,7 @@ static int video_grab_latest(struct capture *c)
   return latest;
 }
 
-static void video_requeue(struct capture *c, int idx)
+static void video_requeue(struct lcap *c, int idx)
 {
   struct v4l2_buffer b = {.type = V4L2_BUF_TYPE_VIDEO_CAPTURE, .memory = V4L2_MEMORY_MMAP,
                           .index = (unsigned)idx};
@@ -201,23 +203,25 @@ static void video_requeue(struct capture *c, int idx)
 
 /* ---------------- public ---------------- */
 
-struct capture *capture_open(const struct capture_opts *o, SDL_Renderer *ren)
+static void lcap_close(struct lcap *c);
+
+static struct lcap *lcap_open(const struct capture_opts *o, SDL_Renderer *ren)
 {
-  struct capture *c = calloc(1, sizeof *c);
+  struct lcap *c = calloc(1, sizeof *c);
   c->fd = -1;
   pthread_mutex_init(&c->luma_lock, NULL);
-  if (video_open(c, o) < 0) { capture_close(c); return NULL; }
+  if (video_open(c, o) < 0) { lcap_close(c); return NULL; }
 
   Uint32 tex_fmt = c->fourcc == V4L2_PIX_FMT_NV12 ? SDL_PIXELFORMAT_NV12 : SDL_PIXELFORMAT_YUY2;
   c->tex = SDL_CreateTexture(ren, tex_fmt, SDL_TEXTUREACCESS_STREAMING, (int)c->width, (int)c->height);
-  if (!c->tex) { fprintf(stderr, "SDL texture: %s\n", SDL_GetError()); capture_close(c); return NULL; }
+  if (!c->tex) { fprintf(stderr, "SDL texture: %s\n", SDL_GetError()); lcap_close(c); return NULL; }
   SDL_SetYUVConversionMode(c->height > 576 ? SDL_YUV_CONVERSION_BT709 : SDL_YUV_CONVERSION_BT601);
 
   c->have_audio = !o->no_audio && audio_start(c, o) == 0;
   return c;
 }
 
-void capture_close(struct capture *c)
+static void lcap_close(struct lcap *c)
 {
   if (!c) return;
   if (c->have_audio) {
@@ -239,7 +243,7 @@ void capture_close(struct capture *c)
   free(c);
 }
 
-int capture_poll(struct capture *c, int timeout_ms)
+static int lcap_poll(struct lcap *c, int timeout_ms)
 {
   struct pollfd pfd = {.fd = c->fd, .events = POLLIN};
   if (poll(&pfd, 1, timeout_ms) <= 0) return 0;
@@ -266,30 +270,50 @@ int capture_poll(struct capture *c, int timeout_ms)
   return 1;
 }
 
-SDL_Texture *capture_texture(struct capture *c) { return c->tex; }
-unsigned capture_width(struct capture *c) { return c->width; }
-unsigned capture_height(struct capture *c) { return c->height; }
-int capture_has_audio(struct capture *c) { return c->have_audio; }
-double capture_audio_queued_ms(struct capture *c)
+static SDL_Texture *lcap_texture(struct lcap *c) { return c->tex; }
+static unsigned lcap_width(struct lcap *c) { return c->width; }
+static unsigned lcap_height(struct lcap *c) { return c->height; }
+static int lcap_has_audio(struct lcap *c) { return c->have_audio; }
+static double lcap_audio_queued_ms(struct lcap *c)
 {
   return c->have_audio ? SDL_GetQueuedAudioSize(c->out) / 192.0 : 0.0;
 }
 
-void capture_set_muted(struct capture *c, int muted)
+static void lcap_set_muted(struct lcap *c, int muted)
 {
   atomic_store(&c->muted, muted);
   if (muted && c->have_audio) SDL_ClearQueuedAudio(c->out);
 }
 
-int capture_muted(struct capture *c) { return atomic_load(&c->muted); }
+static int lcap_muted(struct lcap *c) { return atomic_load(&c->muted); }
 
-void capture_want_luma(struct capture *c) { atomic_store(&c->luma_wanted, 1); }
+static void lcap_want_luma(struct lcap *c) { atomic_store(&c->luma_wanted, 1); }
 
-unsigned capture_copy_luma(struct capture *c, uint8_t *dst)
+static unsigned lcap_copy_luma(struct lcap *c, uint8_t *dst)
 {
   pthread_mutex_lock(&c->luma_lock);
   unsigned seq = c->luma_seq;
   if (seq) memcpy(dst, c->luma, (size_t)c->width * c->height);
   pthread_mutex_unlock(&c->luma_lock);
   return seq;
+}
+
+// V4L2 devices are just files; list the nodes that exist.
+void capture_list_devices(void)
+{
+  char path[32];
+  for (int i = 0; i < 32; i++) {
+    snprintf(path, sizeof path, "/dev/video%d", i);
+    if (access(path, R_OK | W_OK) == 0) fprintf(stderr, "video: /dev/video%d\n", i);
+  }
+}
+
+CAPTURE_DEFINE_OPS(struct lcap, lcap);
+
+struct capture *local_capture_open(const struct capture_opts *o, SDL_Renderer *ren)
+{
+  struct lcap *c = lcap_open(o, ren);
+  if (!c) return NULL;
+  c->base.ops = &lcap_ops;
+  return &c->base;
 }

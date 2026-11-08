@@ -7,6 +7,8 @@
 #include <stdint.h>
 
 #define SV_PORT 39383
+// Raspberry Pi stream relay (pi/sv_stream_relay.py): MPEG-TS over UDP.
+#define SV_STREAM_PORT 39384
 #define SV_MAGIC0 'S'
 #define SV_MAGIC1 'W'
 
