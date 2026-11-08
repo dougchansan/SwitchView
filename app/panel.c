@@ -122,8 +122,9 @@ struct stick_state { float x, y; int dragging, latched; };
 
 struct panel {
   SDL_Renderer *ren;
-  TTF_Font *font_big, *font_small, *font_sym, *font_mono;
+  TTF_Font *font_big, *font_small, *font_sym;
   TTF_Font *font_log;     // script log: twice font_small, readable on HiDPI
+  TTF_Font *font_mono, *font_mono_big;  // companion logs: small + doubled
   struct textcache cache[512];
   int ncache;
 
@@ -208,10 +209,11 @@ static Uint32 first_cp(const char *s)
 static SDL_Texture *text_tex(struct panel *p, const char *s, int big, SDL_Color c, int *w, int *h)
 {
   // big: 0 small, 1 big, 2 mono, 3 script log
-  TTF_Font *f = big == 3 ? p->font_log : big == 2 ? p->font_mono : big ? p->font_big : p->font_small;
+  TTF_Font *f = big == 4 ? p->font_mono_big : big == 3 ? p->font_log
+          : big == 2 ? p->font_mono : big ? p->font_big : p->font_small;
   if (!f || !*s) return NULL;
   // Symbols (arrows, minus, home) live in DejaVu, not Noto.
-  if (big != 2 && big != 3 && p->font_sym && !TTF_GlyphIsProvided32(f, first_cp(s))) f = p->font_sym;
+  if (big != 2 && big != 3 && big != 4 && p->font_sym && !TTF_GlyphIsProvided32(f, first_cp(s))) f = p->font_sym;
   for (int i = 0; i < p->ncache; i++) {
     struct textcache *t = &p->cache[i];
     if (t->size == big && !strcmp(t->str, s) && t->color.r == c.r && t->color.g == c.g && t->color.b == c.b) {
@@ -454,9 +456,12 @@ struct panel *panel_create(SDL_Renderer *ren)
     static const char *const mono_paths[] = {
         "/System/Library/Fonts/Menlo.ttc", "/System/Library/Fonts/Monaco.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"};
-    for (size_t i = 0; i < sizeof mono_paths / sizeof mono_paths[0] && !p->font_mono; i++)
+    for (size_t i = 0; i < sizeof mono_paths / sizeof mono_paths[0] && !p->font_mono; i++) {
       p->font_mono = TTF_OpenFont(mono_paths[i], 11);
+      if (p->font_mono) p->font_mono_big = TTF_OpenFont(mono_paths[i], 22);
+    }
     if (!p->font_mono) p->font_mono = p->font_small;
+    if (!p->font_mono_big) p->font_mono_big = p->font_mono;
     if (!p->font_big) fprintf(stderr, "panel: no TTF font found; labels disabled\n");
   }
   for (int i = 0; i < SDL_NumJoysticks(); i++) {
@@ -477,6 +482,7 @@ void panel_destroy(struct panel *p)
   if (p->font_log && p->font_log != p->font_small) TTF_CloseFont(p->font_log);
   if (p->font_small) TTF_CloseFont(p->font_small);
   if (p->font_sym) TTF_CloseFont(p->font_sym);
+  if (p->font_mono_big && p->font_mono_big != p->font_mono) TTF_CloseFont(p->font_mono_big);
   if (p->font_mono && p->font_mono != p->font_small) TTF_CloseFont(p->font_mono);
   TTF_Quit();
   free(p);
@@ -989,7 +995,7 @@ static void render_script_panel(struct panel *p)
     struct companion *comp = p->logs[p->log_tab - 1];
     // Companion watcher: monospace, the watcher's own colours, newest at the bottom.
     static struct comp_line cl[COMP_LINES];
-    int mlh = TTF_FontLineSkip(p->font_mono);
+    int mlh = TTF_FontLineSkip(p->font_mono_big);
     int mfit = (int)((lb.h - top - SS(p, 16)) / (mlh ? mlh : 13));
     if (mfit > COMP_LINES) mfit = COMP_LINES;
     int n = companion_lines(comp, cl, mfit);
@@ -997,7 +1003,7 @@ static void render_script_panel(struct panel *p)
       {45, 45, 45, 255}, {150, 150, 150, 255}, {205, 50, 50, 255}, {30, 150, 60, 255},
       {190, 130, 0, 255}, {50, 100, 220, 255}, {160, 60, 180, 255}, {0, 140, 160, 255}};
     SDL_RenderSetClipRect(r, &clip);
-    if (!n) draw_text(p, "waiting for the watcher...", 2, PAL[1], (int)(lb.x + SS(p, 12)),
+    if (!n) draw_text(p, "waiting for the watcher...", 4, PAL[1], (int)(lb.x + SS(p, 12)),
                       (int)(lb.y + top + SS(p, 8) + mlh / 2), 1);
     for (int i = 0; i < n; i++) {
       int x = (int)(lb.x + SS(p, 12)), y = (int)(lb.y + top + SS(p, 8) + mlh * i + mlh / 2);
@@ -1007,9 +1013,9 @@ static void render_script_panel(struct panel *p)
         char part[COMP_COLS];
         snprintf(part, sizeof part, "%.*s", sg->len, cl[i].text + sg->start);
         int w = 0;
-        TTF_SizeUTF8(p->font_mono, part, &w, NULL);
+        TTF_SizeUTF8(p->font_mono_big, part, &w, NULL);
         SDL_Color col = PAL[sg->color < 8 ? sg->color : 0];
-        draw_text(p, part, 2, col, x, y, 1);
+        draw_text(p, part, 4, col, x, y, 1);
         x += w;
       }
     }
