@@ -61,4 +61,16 @@ int link_has_mouse(struct link *l);
 void link_get_stats(struct link *l, struct link_stats *out);
 const char *link_describe(struct link *l);
 
+// Lightweight round-trip probe to an arbitrary host (the Raspberry Pi video
+// relay), to compare the Mac's ethernet vs wifi latency alongside the pad
+// board's. It times a non-blocking TCP connect; a refused port still answers in
+// one round trip, so the relay needs no cooperation and its stream is untouched.
+struct pinger;
+struct pinger *pinger_open(const char *host, int port);
+void pinger_close(struct pinger *pg);
+// Call every loop iteration with now_ms = SDL_GetTicks().
+void pinger_poll(struct pinger *pg, uint32_t now_ms);
+float pinger_rtt(struct pinger *pg);   // last measured round trip, ms
+int pinger_up(struct pinger *pg);      // host answered within the last few seconds
+
 #endif

@@ -34,6 +34,10 @@ void panel_render(struct panel *p, const SDL_Rect *area, const char *status);
 // 1 = Pico answering, 0 = not; drawn as a small dot in the panel corner.
 void panel_set_link(struct panel *p, int up);
 
+// Round-trip latency readout: pad board (link) and, when streaming, the
+// Raspberry Pi video relay. rtt in ms; *_up = answered recently.
+void panel_set_net(struct panel *p, float pad_rtt, int pad_up, float pi_rtt, int pi_up, int streaming);
+
 // Translucent round mute button drawn over the video (top-left); alpha 0..1 fades it.
 void panel_draw_mute(struct panel *p, SDL_FRect rc, int muted, int hover, float alpha);
 int panel_text_focused(struct panel *p);

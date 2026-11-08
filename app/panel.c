@@ -883,6 +883,11 @@ static int last_ratio(struct companion *c, char *out, size_t n)
   return 0;
 }
 void panel_set_link(struct panel *p, int up) { p->link_up = up; }
+void panel_set_net(struct panel *p, float pad_rtt, int pad_up, float pi_rtt, int pi_up, int streaming)
+{
+  p->pad_rtt_ms = pad_rtt; p->pad_up = pad_up;
+  p->pi_rtt_ms = pi_rtt; p->pi_up = pi_up; p->streaming = streaming;
+}
 
 /* ---------------- render ---------------- */
 
@@ -1343,6 +1348,26 @@ void panel_render(struct panel *p, const SDL_Rect *area, const char *status)
     float d = 9 * p->scale;
     SDL_FRect dot = {SX(p, 10) - d / 2, SY(p, 388) - d / 2, d, d};
     rrect(r, dot, d / 2, p->link_up ? (SDL_Color){70, 190, 90, 255} : (SDL_Color){215, 80, 80, 255}, -1);
+  }
+  // Round-trip latency along the bottom edge: the pad board vs the Raspberry Pi
+  // video relay. Switch the Mac between ethernet and wifi and watch both move.
+  {
+    TTF_Font *f = p->font_small ? p->font_small : p->font_big;
+    SDL_Color lo = {110, 110, 110, 255}, down = {185, 120, 120, 255}, sep = {170, 170, 170, 255};
+    char buf[48];
+    int x = SX(p, 25), y = SY(p, 414), w = 0;
+    if (p->pad_up) snprintf(buf, sizeof buf, "pad %.0f ms", p->pad_rtt_ms);
+    else snprintf(buf, sizeof buf, "pad —");
+    draw_text(p, buf, 0, p->pad_up ? lo : down, x, y, 1);
+    if (f) TTF_SizeUTF8(f, buf, &w, NULL);
+    x += w + SS(p, 12);
+    if (p->streaming) {
+      draw_text(p, "·", 0, sep, x, y, 1);
+      x += SS(p, 10);
+      if (p->pi_up) snprintf(buf, sizeof buf, "Pi %.0f ms", p->pi_rtt_ms);
+      else snprintf(buf, sizeof buf, "Pi —");
+      draw_text(p, buf, 0, p->pi_up ? lo : down, x, y, 1);
+    }
   }
 }
 

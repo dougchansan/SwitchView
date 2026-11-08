@@ -6,7 +6,9 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netdb.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -553,3 +555,98 @@ void link_get_stats(struct link *l, struct link_stats *out)
 
 const char *link_describe(struct link *l) { return l->desc; }
 int link_has_mouse(struct link *l) { return l->pad == PAD_UDP; }
+
+/* ---------------- Raspberry Pi relay latency probe ---------------- */
+
+#define PINGER_INTERVAL_MS 700    // start a fresh probe at most this often
+#define PINGER_TIMEOUT_MS 1500    // a probe in flight longer than this failed
+#define PINGER_UP_MS 4000         // "up" if it answered within this window
+#define PINGER_RERESOLVE_MS 10000
+
+struct pinger {
+  char host[256];
+  int port;
+  struct addrinfo *ai;     // resolved target
+  long last_resolve_ms;
+  int fd;                  // >= 0 while a probe is in flight
+  long probe_start_ms, last_start_ms, last_ok_ms;
+  float rtt_ms;
+};
+
+static void pinger_resolve(struct pinger *pg, long now)
+{
+  if (pg->ai) { freeaddrinfo(pg->ai); pg->ai = NULL; }
+  pg->last_resolve_ms = now;
+  struct addrinfo hints = {0};
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  char port[16];
+  snprintf(port, sizeof port, "%d", pg->port);
+  struct addrinfo *res = NULL;
+  if (getaddrinfo(pg->host, port, &hints, &res) == 0) pg->ai = res;
+}
+
+struct pinger *pinger_open(const char *host, int port)
+{
+  if (!host || !*host) return NULL;
+  struct pinger *pg = calloc(1, sizeof *pg);
+  snprintf(pg->host, sizeof pg->host, "%s", host);
+  pg->port = port > 0 ? port : 80;
+  pg->fd = -1;
+  pg->rtt_ms = -1;
+  pinger_resolve(pg, mono_ms());  // first resolve up front (mDNS can be slow)
+  return pg;
+}
+
+void pinger_close(struct pinger *pg)
+{
+  if (!pg) return;
+  if (pg->fd >= 0) close(pg->fd);
+  if (pg->ai) freeaddrinfo(pg->ai);
+  free(pg);
+}
+
+static void pinger_finish(struct pinger *pg, int reachable, long now)
+{
+  if (pg->fd >= 0) { close(pg->fd); pg->fd = -1; }
+  if (reachable) { pg->rtt_ms = (float)(now - pg->probe_start_ms); pg->last_ok_ms = now; }
+}
+
+void pinger_poll(struct pinger *pg, uint32_t now_ms)
+{
+  (void)now_ms;
+  if (!pg) return;
+  long now = mono_ms();
+
+  // Check an in-flight probe: connected (SO_ERROR 0) or refused (ECONNREFUSED)
+  // both mean the host answered in one round trip.
+  if (pg->fd >= 0) {
+    struct pollfd pf = {.fd = pg->fd, .events = POLLOUT};
+    if (poll(&pf, 1, 0) > 0 && (pf.revents & (POLLOUT | POLLERR | POLLHUP))) {
+      int err = 0;
+      socklen_t el = sizeof err;
+      getsockopt(pg->fd, SOL_SOCKET, SO_ERROR, &err, &el);
+      pinger_finish(pg, err == 0 || err == ECONNREFUSED, now);
+    } else if (now - pg->probe_start_ms >= PINGER_TIMEOUT_MS) {
+      pinger_finish(pg, 0, now);  // timed out: leaves rtt as-is, falls to "down"
+    }
+  }
+
+  if (!pg->ai && now - pg->last_resolve_ms >= PINGER_RERESOLVE_MS) pinger_resolve(pg, now);
+
+  if (pg->fd < 0 && pg->ai && now - pg->last_start_ms >= PINGER_INTERVAL_MS) {
+    pg->last_start_ms = now;
+    int fd = socket(pg->ai->ai_family, SOCK_STREAM, 0);
+    if (fd < 0) return;
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+    pg->probe_start_ms = now;
+    int rc = connect(fd, pg->ai->ai_addr, pg->ai->ai_addrlen);
+    if (rc == 0) { pg->fd = fd; pinger_finish(pg, 1, now); }          // instant (localhost)
+    else if (errno == EINPROGRESS) pg->fd = fd;                       // in flight
+    else if (errno == ECONNREFUSED) { pg->fd = fd; pinger_finish(pg, 1, now); }  // refused = reachable
+    else close(fd);                                                  // unreachable
+  }
+}
+
+float pinger_rtt(struct pinger *pg) { return pg ? pg->rtt_ms : -1; }
+int pinger_up(struct pinger *pg) { return pg && pg->last_ok_ms && mono_ms() - pg->last_ok_ms < PINGER_UP_MS; }

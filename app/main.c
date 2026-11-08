@@ -158,6 +158,9 @@ int main(int argc, char **argv)
   if (!cap) return 1;
   struct link *link = strcmp(host, "none") ? link_open(host, port, kb_url) : NULL;
   struct panel *panel = panel_create(ren);
+  // Latency probe to the Pi video relay (only when streaming over Wi-Fi), so the
+  // panel can show pad-board vs relay round-trip side by side.
+  struct pinger *pinger = co.stream_host ? pinger_open(co.stream_host, co.stream_port) : NULL;
 
   // Scripts live in SwitchView/scripts, next to app/ where the binary is.
   char script_dir[1024] = "scripts";
@@ -357,6 +360,16 @@ int main(int argc, char **argv)
       if (control) control_set_link(control, &ls, link_describe(link));
     }
 
+    // Network latency readout: pad board (link) vs the Pi relay.
+    if (pinger) pinger_poll(pinger, now);
+    {
+      struct link_stats ls = {0};
+      if (link) link_get_stats(link, &ls);
+      panel_set_net(panel, ls.rtt_ms, link ? ls.up : 0,
+                    pinger ? pinger_rtt(pinger) : 0.f, pinger ? pinger_up(pinger) : 0,
+                    co.stream_host ? 1 : 0);
+    }
+
     // Panel highlights follow held keys/gamepad even without events.
     if (!fullscreen && (now / 33) != (t_last / 33)) need_redraw = 1;
 
@@ -415,6 +428,7 @@ int main(int argc, char **argv)
   power_destroy(power);
   ocr_destroy(ocr);
   frame_lib_close(screens);
+  pinger_close(pinger);
   link_close(link);
   panel_destroy(panel);
   capture_close(cap);
