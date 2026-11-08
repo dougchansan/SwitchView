@@ -121,6 +121,7 @@ struct stick_state { float x, y; int dragging, latched; };
 struct panel {
   SDL_Renderer *ren;
   TTF_Font *font_big, *font_small, *font_sym, *font_mono;
+  TTF_Font *font_log;     // script log: twice font_small, readable on HiDPI
   struct textcache cache[512];
   int ncache;
 
@@ -201,10 +202,11 @@ static Uint32 first_cp(const char *s)
 
 static SDL_Texture *text_tex(struct panel *p, const char *s, int big, SDL_Color c, int *w, int *h)
 {
-  TTF_Font *f = big == 2 ? p->font_mono : big ? p->font_big : p->font_small;
+  // big: 0 small, 1 big, 2 mono, 3 script log
+  TTF_Font *f = big == 3 ? p->font_log : big == 2 ? p->font_mono : big ? p->font_big : p->font_small;
   if (!f || !*s) return NULL;
   // Symbols (arrows, minus, home) live in DejaVu, not Noto.
-  if (big != 2 && p->font_sym && !TTF_GlyphIsProvided32(f, first_cp(s))) f = p->font_sym;
+  if (big != 2 && big != 3 && p->font_sym && !TTF_GlyphIsProvided32(f, first_cp(s))) f = p->font_sym;
   for (int i = 0; i < p->ncache; i++) {
     struct textcache *t = &p->cache[i];
     if (t->size == big && !strcmp(t->str, s) && t->color.r == c.r && t->color.g == c.g && t->color.b == c.b) {
@@ -435,6 +437,8 @@ struct panel *panel_create(SDL_Renderer *ren)
   if (TTF_Init() == 0) {
     p->font_big = open_font(21, 1);
     p->font_small = open_font(12, 0);
+    p->font_log = open_font(24, 0);
+    if (!p->font_log) p->font_log = p->font_small;
     static const char *const sym_paths[] = {
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/System/Library/Fonts/Apple Symbols.ttf",
@@ -465,6 +469,7 @@ void panel_destroy(struct panel *p)
   for (int i = 0; i < p->ncache; i++) SDL_DestroyTexture(p->cache[i].tex);
   if (p->pad) SDL_GameControllerClose(p->pad);
   if (p->font_big) TTF_CloseFont(p->font_big);
+  if (p->font_log && p->font_log != p->font_small) TTF_CloseFont(p->font_log);
   if (p->font_small) TTF_CloseFont(p->font_small);
   if (p->font_sym) TTF_CloseFont(p->font_sym);
   if (p->font_mono && p->font_mono != p->font_small) TTF_CloseFont(p->font_mono);
@@ -955,8 +960,9 @@ static void render_script_panel(struct panel *p)
     return;
   }
   static char lines[SCRIPT_LOG_LINES][SCRIPT_LOG_COLS];
-  int lh = TTF_FontLineSkip(p->font_small ? p->font_small : p->font_big);
-  int fit = (int)((lb.h - top - SS(p, 20)) / (lh ? lh : 14));
+  TTF_Font *lf = p->font_log ? p->font_log : p->font_big;
+  int lh = TTF_FontLineSkip(lf);
+  int fit = (int)((lb.h - top - SS(p, 20)) / (lh ? lh : 28));
   if (fit > SCRIPT_LOG_LINES) fit = SCRIPT_LOG_LINES;
   int nl = script_log(p->script, lines, fit);
   // Keep long lines inside the card instead of spilling over the panel.
@@ -966,7 +972,7 @@ static void render_script_panel(struct panel *p)
     const char *t = lines[i];
     SDL_Color c = !strncmp(t, "error", 5) ? (SDL_Color){200, 60, 60, 255}
                 : t[0] == '>' ? C_ACCENT : C_TEXT;
-    draw_text(p, t, 0, c, (int)(lb.x + SS(p, 14)), (int)(lb.y + SS(p, 10) + lh * i + lh / 2), 1);
+    draw_text(p, t, p->font_log ? 3 : 1, c, (int)(lb.x + SS(p, 14)), (int)(lb.y + SS(p, 10) + lh * i + lh / 2), 1);
   }
   SDL_RenderSetClipRect(r, NULL);
 }

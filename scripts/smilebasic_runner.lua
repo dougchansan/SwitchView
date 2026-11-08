@@ -372,6 +372,14 @@ else
     start = "V=START(" .. PORT .. "," .. (HOST:gsub("%.", ",")) .. ")"
   end
 end
+-- Always type the nine-argument form; the host prints the five-argument one,
+-- which newer bootstraps reject with "Wrong number of arguments".
+do
+  local args = start:match("^V=START%(([%d,]+)%)%s*$")
+  if args and select(2, args:gsub(",", "")) == 4 then
+    start = "V=START(" .. args .. ",0,0,0,0)"
+  end
+end
 tail_host_log()
 
 local state = to_direct()
