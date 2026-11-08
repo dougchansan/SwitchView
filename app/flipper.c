@@ -311,8 +311,10 @@ static size_t build(struct script *s, const char *text, size_t len)
 {
   // Key hold and gap; raise SV_FLIPPER_KEY_MS if the console drops characters.
   int ms = env_int("SV_FLIPPER_KEY_MS", 10, 5, 250);
-  // Lead-in after Bad KB starts, while the console sees its USB keyboard.
-  int start = env_int("SV_FLIPPER_START_MS", 1500, 300, 15000);
+  // Lead-in after Bad KB starts, while the console re-enumerates the USB
+  // keyboard. Raise SV_FLIPPER_START_MS if the first characters of a command go
+  // missing (the console wasn't ready yet).
+  int start = env_int("SV_FLIPPER_START_MS", 900, 300, 15000);
   sadd(s, "REM SwitchView keyboard job\nDELAY %d\n", start);
   s->ms += start;
   size_t i = 0;
@@ -364,11 +366,11 @@ long flipper_type(const char *host, int port, const char *text, size_t len, char
   pb_blob(&st, 1, "Bad KB", 6);
   pb_blob(&st, 2, REMOTE, strlen(REMOTE));
   if (request(&c, F_APP_START, st.p, st.n, NULL)) goto out;
-  usleep((useconds_t)env_int("SV_FLIPPER_LOAD_MS", 1200, 200, 10000) * 1000);  // Bad KB loads the script first
+  usleep((useconds_t)env_int("SV_FLIPPER_LOAD_MS", 650, 200, 10000) * 1000);  // Bad KB loads the script first
   if (input(&c, KEY_OK)) goto out;
   {
     // Wait the script's own duration plus parser/USB overhead, then leave.
-    long wait = s.ms + s.ms / 8 + env_int("SV_FLIPPER_CLOSE_MS", 800, 0, 30000);
+    long wait = s.ms + s.ms / 8 + env_int("SV_FLIPPER_CLOSE_MS", 350, 0, 30000);
     long end = mono_ms() + wait;
     while (mono_ms() < end) {
       usleep(150 * 1000);
