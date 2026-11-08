@@ -154,11 +154,14 @@ static void *run(void *arg)
       say(p, wait_picture(p, PICTURE_WAIT_S) ? "console is up" : "no picture yet after the boot press");
     }
   } else if (!strcmp(action, "menu")) {
-    // Hold ~3 s while the console is on to raise the HOME Power menu, then
-    // leave the dialog up for a script (or the user) to pick Restart.
+    // Hold to raise the HOME Power menu, then leave the dialog up for a script
+    // (or the user) to pick Restart. The exact hold that shows the menu (vs a
+    // short press that sleeps) is console-specific; tune with SV_MENU_S.
+    const char *e = getenv("SV_MENU_S");
+    double menu_s = e && atof(e) > 0 ? atof(e) : 2.0;
     travel(p);
-    say(p, "menu press %d s", BOOT_S);
-    if (press(p, BOOT_S)) say(p, "power menu should be up (pick Restart)");
+    say(p, "menu press %.1f s", menu_s);
+    if (press(p, menu_s)) say(p, "power menu should be up (pick Restart)");
   } else if (!strcmp(action, "off")) {
     force_off(p);
   } else if (!strcmp(action, "restart")) {
