@@ -201,17 +201,15 @@ int main(int argc, char **argv)
     }
   }
 
-  // NS2 log tab: tail the runner's host.log so the host's 1/M..M/M progress
-  // (which scrolls out of the script log) stays visible and drives a pill.
+  // NS2 log tab: tools/ns2-watch.sh follows the newest NS2 run folder's run.log,
+  // so the host's 1/M..M/M progress shows (and drives a pill) for every run,
+  // including ones started outside the panel.
   struct companion *ns2log = NULL;
   {
-    const char *xdg = getenv("XDG_STATE_HOME");
-    const char *home = getenv("HOME") ? getenv("HOME") : ".";
-    char path[1024], cmd[1200];
-    if (xdg && *xdg) snprintf(path, sizeof path, "%s/switchview/ns2/host.log", xdg);
-    else snprintf(path, sizeof path, "%s/.local/state/switchview/ns2/host.log", home);
-    snprintf(cmd, sizeof cmd, "mkdir -p \"$(dirname '%s')\"; touch '%s'; exec tail -n 200 -F '%s'",
-             path, path, path);
+    char *base = SDL_GetBasePath();  // .../app/
+    char cmd[1200];
+    snprintf(cmd, sizeof cmd, "exec sh '%s../tools/ns2-watch.sh'", base ? base : "");
+    SDL_free(base);
     ns2log = companion_start(cmd, 100);
     if (ns2log) panel_set_ns2log(panel, ns2log);
   }
