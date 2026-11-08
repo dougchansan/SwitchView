@@ -159,6 +159,16 @@ struct panel {
   char log_pill[MAX_LOGS][14];       // status-pill prefix ("" = no pill)
   int nlogs;
   int log_tab;            // 0 script log, 1..nlogs = logs[log_tab-1]
+
+  // Log selection: drag to highlight rows, Cmd/Ctrl+C copies them. The rows are
+  // snapshotted each frame during render so hit-testing and copy share geometry.
+  char disp[COMP_LINES][COMP_COLS];  // plain text of the rows currently drawn
+  int disp_n;                        // how many rows disp[] holds
+  int disp_tab;                      // which tab disp[] was captured from
+  SDL_Rect disp_area;                // pixel rect of the log content (the clip)
+  int disp_x, disp_y0, disp_lh;      // pixel: text left, row-0 centre, line height
+  int sel_a, sel_b;                  // selected row range, inclusive; sel_a<0 = none
+  int sel_dragging;
 };
 
 /* ---------------- text ---------------- */
@@ -441,6 +451,7 @@ struct panel *panel_create(SDL_Renderer *ren)
   p->mouse_widget = -1;
   p->hover = HOV_NONE;
   p->armed = -1;
+  p->sel_a = p->sel_b = -1;
   if (TTF_Init() == 0) {
     p->font_big = open_font(21, 1);
     p->font_small = open_font(12, 0);
@@ -539,12 +550,51 @@ static void type_chars(struct panel *p, const char *s, int allow_newline)
   }
 }
 
+// Which log row sits under pixel y, using the geometry captured last render.
+static int log_row_at(struct panel *p, int my)
+{
+  if (p->disp_n <= 0 || p->disp_lh <= 0) return -1;
+  int row = (my - (p->disp_y0 - p->disp_lh / 2)) / p->disp_lh;
+  if (row < 0) row = 0;
+  if (row >= p->disp_n) row = p->disp_n - 1;
+  return row;
+}
+
+static int in_log_box(struct panel *p, int mx, int my)
+{
+  const SDL_Rect *a = &p->disp_area;
+  return mx >= a->x && mx < a->x + a->w && my >= a->y && my < a->y + a->h;
+}
+
+// Copy the selected rows to the clipboard, newest geometry, one line each.
+static void copy_selection(struct panel *p)
+{
+  if (p->sel_a < 0) return;
+  int a = p->sel_a, b = p->sel_b;
+  if (a > b) { int t = a; a = b; b = t; }
+  if (b >= p->disp_n) b = p->disp_n - 1;
+  if (a < 0 || a > b) return;
+  static char buf[COMP_LINES * COMP_COLS + COMP_LINES];
+  size_t off = 0;
+  for (int i = a; i <= b && off < sizeof buf - 2; i++) {
+    int w = snprintf(buf + off, sizeof buf - off, "%s\n", p->disp[i]);
+    if (w > 0) off += (size_t)w;
+  }
+  if (off) buf[off - 1] = 0;  // drop trailing newline
+  SDL_SetClipboardText(buf);
+}
+
 int panel_event(struct panel *p, const SDL_Event *e, const SDL_Rect *area)
 {
   set_layout(p, area);
   switch (e->type) {
   case SDL_MOUSEBUTTONDOWN: {
     int mx = e->button.x, my = e->button.y;
+    // A left-click anywhere but inside the log box clears any text selection.
+    if (e->button.button == SDL_BUTTON_LEFT && !in_log_box(p, mx, my)) {
+      p->sel_a = p->sel_b = -1;
+      p->sel_dragging = 0;
+    }
     if (my < area->y) { set_focus(p, 0); return 0; }
     if (in_rect(&TEXTBOX, p, mx, my)) { set_focus(p, 1); return 1; }
     if (in_rect(&ENTERBTN, p, mx, my)) { submit_line(p, 1); return 1; }
@@ -570,8 +620,19 @@ int panel_event(struct panel *p, const SDL_Event *e, const SDL_Rect *area)
     if (p->nlogs)
       for (int t = 0; t <= p->nlogs; t++) {
         SDL_Rect tr = logtab_rect(t);
-        if (in_rect(&tr, p, mx, my)) { p->log_tab = t; return 1; }
+        if (in_rect(&tr, p, mx, my)) {
+          if (p->log_tab != t) { p->log_tab = t; p->sel_a = p->sel_b = -1; }
+          return 1;
+        }
       }
+    // Start a text selection inside the log box (drag to extend, Cmd/Ctrl+C copies).
+    if (e->button.button == SDL_BUTTON_LEFT && in_log_box(p, mx, my)) {
+      set_focus(p, 0);
+      int row = log_row_at(p, my);
+      p->sel_a = p->sel_b = row;
+      p->sel_dragging = row >= 0;
+      return 1;
+    }
     for (unsigned i = 0; i < NQUICK; i++) {
       const struct quick *q = &QUICK[i];
       if (!in_rect(&q->r, p, mx, my)) continue;
@@ -620,6 +681,11 @@ int panel_event(struct panel *p, const SDL_Event *e, const SDL_Rect *area)
     return 1;
   }
   case SDL_MOUSEMOTION: {
+    if (p->sel_dragging) {
+      int row = log_row_at(p, e->motion.y);
+      if (row >= 0) p->sel_b = row;
+      return 1;
+    }
     int h = e->motion.y >= area->y ? hover_at(p, e->motion.x, e->motion.y) : HOV_NONE;
     if (h != p->hover) { p->hover = h; p->hover_since = SDL_GetTicks(); }
     for (int i = 0; i < 2; i++)
@@ -628,6 +694,7 @@ int panel_event(struct panel *p, const SDL_Event *e, const SDL_Rect *area)
   }
   case SDL_MOUSEBUTTONUP:
     if (e->button.button == SDL_BUTTON_LEFT) {
+      p->sel_dragging = 0;
       p->refresh_down = 0;
       if (p->mouse_widget >= 0) { p->mouse_bits &= ~WIDGETS[p->mouse_widget].bit; p->mouse_widget = -1; }
       for (int i = 0; i < 2; i++)
@@ -655,6 +722,11 @@ int panel_event(struct panel *p, const SDL_Event *e, const SDL_Rect *area)
         char *clip = SDL_GetClipboardText();
         if (clip) { type_chars(p, clip, 0); SDL_free(clip); }
       }
+      return 1;
+    }
+    // Copy the highlighted log rows (Cmd+C on mac, Ctrl+C elsewhere).
+    if (down && k == SDLK_c && (e->key.keysym.mod & (KMOD_GUI | KMOD_CTRL)) && p->sel_a >= 0) {
+      copy_selection(p);
       return 1;
     }
     if (e->key.repeat) return 1;
@@ -882,6 +954,23 @@ static void draw_tooltip(struct panel *p, const SDL_Rect *area)
   SDL_SetTextureAlphaMod(tex, 255);
 }
 
+// Paint the highlight behind the selected log rows (call after disp_* are set,
+// before the row text is drawn, inside the log clip).
+static void draw_log_selection(struct panel *p)
+{
+  if (p->sel_a < 0 || p->disp_tab != p->log_tab) return;
+  int a = p->sel_a, b = p->sel_b;
+  if (a > b) { int t = a; a = b; b = t; }
+  if (b >= p->disp_n) b = p->disp_n - 1;
+  if (a < 0 || a > b) return;
+  SDL_SetRenderDrawColor(p->ren, C_ACCENT.r, C_ACCENT.g, C_ACCENT.b, 95);
+  for (int i = a; i <= b; i++) {
+    SDL_Rect hr = {p->disp_area.x, p->disp_y0 - p->disp_lh / 2 + p->disp_lh * i,
+                   p->disp_area.w, p->disp_lh};
+    SDL_RenderFillRect(p->ren, &hr);
+  }
+}
+
 static void render_script_panel(struct panel *p)
 {
   SDL_Renderer *r = p->ren;
@@ -1003,6 +1092,16 @@ static void render_script_panel(struct panel *p)
       {45, 45, 45, 255}, {150, 150, 150, 255}, {205, 50, 50, 255}, {30, 150, 60, 255},
       {190, 130, 0, 255}, {50, 100, 220, 255}, {160, 60, 180, 255}, {0, 140, 160, 255}};
     SDL_RenderSetClipRect(r, &clip);
+    // Snapshot the rows for selection/copy, then paint the highlight behind them.
+    p->disp_tab = p->log_tab;
+    p->disp_area = clip;
+    p->disp_lh = mlh;
+    p->disp_x = (int)(lb.x + SS(p, 12));
+    p->disp_y0 = (int)(lb.y + top + SS(p, 8) + mlh / 2);
+    p->disp_n = n;
+    for (int i = 0; i < n && i < COMP_LINES; i++)
+      snprintf(p->disp[i], COMP_COLS, "%s", cl[i].text);
+    draw_log_selection(p);
     if (!n) draw_text(p, "waiting for the watcher...", 4, PAL[1], (int)(lb.x + SS(p, 12)),
                       (int)(lb.y + top + SS(p, 8) + mlh / 2), 1);
     for (int i = 0; i < n; i++) {
@@ -1031,6 +1130,16 @@ static void render_script_panel(struct panel *p)
   // Keep long lines inside the card instead of spilling over the panel.
   SDL_RenderSetClipRect(r, &clip);
   lb.y += top;
+  // Snapshot the rows for selection/copy, then paint the highlight behind them.
+  p->disp_tab = 0;
+  p->disp_area = clip;
+  p->disp_lh = lh;
+  p->disp_x = (int)(lb.x + SS(p, 14));
+  p->disp_y0 = (int)(lb.y + SS(p, 10) + lh / 2);
+  p->disp_n = nl;
+  for (int i = 0; i < nl && i < COMP_LINES; i++)
+    snprintf(p->disp[i], COMP_COLS, "%s", lines[i]);
+  draw_log_selection(p);
   for (int i = 0; i < nl; i++) {
     const char *t = lines[i];
     SDL_Color c = !strncmp(t, "error", 5) ? (SDL_Color){200, 60, 60, 255}
