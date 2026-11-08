@@ -408,12 +408,15 @@ end
 
 -- LOAD -> RUN -> REMOVE -> V=START go out as ONE Bad KB job: every separate
 -- job costs ~5 s (upload, Bad KB start, lead-in, close) plus a screen wait.
--- The only gaps are in-script pauses (SV_KEY_PAUSE = 250 ms each): after LOAD,
--- and after RUN while the bootstrap runs (keys typed then are dropped).
+-- The only gaps are in-script pauses (SV_KEY_PAUSE = 250 ms each). LOAD always
+-- raises "Load the file. Are you sure?" with Yes selected: wait for it, Enter
+-- confirms it (an Enter at the prompt instead is harmless), then let the load
+-- finish. After RUN, wait while the bootstrap runs (keys typed then are lost).
 local PAUSE = string.char(0x16)
 local function pause(ms) return string.rep(PAUSE, math.max(1, math.floor(ms / 250 + 0.5))) end
-local LOAD_MS = tonumber(os.getenv("SV_NS2_LOAD_MS") or "") or 750
-local RUN_MS = tonumber(os.getenv("SV_NS2_RUN_MS") or "") or 2000
+local DIALOG_MS = tonumber(os.getenv("SV_NS2_DIALOG_MS") or "") or 750
+local LOAD_MS = tonumber(os.getenv("SV_NS2_LOAD_MS") or "") or 1000
+local RUN_MS = tonumber(os.getenv("SV_NS2_RUN_MS") or "") or 1000
 
 -- -> "host connected", "boot failed" or nil (neither showed up).
 local function connect_outcome()
@@ -422,13 +425,13 @@ local function connect_outcome()
   return outcome
 end
 
-type('LOAD "TXT:NS2"\n' .. pause(LOAD_MS) .. "RUN\n" .. pause(RUN_MS) ..
+type('LOAD "TXT:NS2"\n' .. pause(DIALOG_MS) .. "\n" .. pause(LOAD_MS) .. "RUN\n" .. pause(RUN_MS) ..
      "REMOVE NSR,&H60000000,&H3FFFFFFF\n" .. pause(250) .. start .. "\n")
 log("LOAD / RUN / REMOVE / START typed")
 local outcome = connect_outcome()
 
 -- Fallback: step by step, waiting at each prompt. Reached when a keystroke
--- landed somewhere else: LOAD's "load the file?" dialog (unsaved program), or
+-- landed somewhere else: LOAD's dialog showed up late or not at all, or
 -- a bootstrap slower than SV_NS2_RUN_MS (REMOVE / START typed while it ran).
 if outcome == nil then
   log("one-shot did not connect - retrying step by step")
