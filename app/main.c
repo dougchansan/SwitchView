@@ -196,6 +196,21 @@ int main(int argc, char **argv)
       panel_set_companion(panel, companion);
     }
   }
+
+  // NS2 log tab: tail the runner's host.log so the host's 1/M..M/M progress
+  // (which scrolls out of the script log) stays visible and drives a pill.
+  struct companion *ns2log = NULL;
+  {
+    const char *xdg = getenv("XDG_STATE_HOME");
+    const char *home = getenv("HOME") ? getenv("HOME") : ".";
+    char path[1024], cmd[1200];
+    if (xdg && *xdg) snprintf(path, sizeof path, "%s/switchview/ns2/host.log", xdg);
+    else snprintf(path, sizeof path, "%s/.local/state/switchview/ns2/host.log", home);
+    snprintf(cmd, sizeof cmd, "mkdir -p \"$(dirname '%s')\"; touch '%s'; exec tail -n 200 -F '%s'",
+             path, path, path);
+    ns2log = companion_start(cmd, 100);
+    if (ns2log) panel_set_ns2log(panel, ns2log);
+  }
   struct control_ctx cctx = {.script = script, .ocr = ocr, .cap = cap, .frames = screens, .power = power,
                             .companion = companion};
   struct control *control = control_port > 0 ? control_start(control_port, &cctx) : NULL;
@@ -393,6 +408,7 @@ int main(int argc, char **argv)
 
   control_stop(control);
   companion_stop(companion);
+  companion_stop(ns2log);
   script_destroy(script);
   power_destroy(power);
   ocr_destroy(ocr);

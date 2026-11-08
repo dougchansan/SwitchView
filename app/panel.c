@@ -84,9 +84,10 @@ static const struct quick QUICK[] = {
 };
 #define NQUICK (sizeof QUICK / sizeof QUICK[0])
 #define CONFIRM_MS 3000
-// Tabs on the log card: the script log and the companion watcher.
-static const SDL_Rect TAB_SCRIPT = {747, 156, 96, 22};
-static const SDL_Rect TAB_COMP = {849, 156, 120, 22};
+#define MAX_LOGS 3  // companion log tabs beyond the always-present Script tab
+
+// Log-card tab i (0 = Script, 1.. = companion watchers), in design space.
+static SDL_Rect logtab_rect(int i) { SDL_Rect r = {747 + i * 108, 156, 104, 22}; return r; }
 
 // Hover/focus targets for the animated selection ring.
 enum { HOV_NONE = -1, HOV_STICK0 = 100, HOV_STICK1, HOV_TEXT, HOV_LIVE, HOV_ENTER,
@@ -151,8 +152,11 @@ struct panel {
   int armed;              // QUICK index waiting for a confirming click, -1 none
   uint32_t armed_ms;
   char power_action[16];  // last power action started from the panel
-  struct companion *companion;
-  int log_tab;            // 0 script log, 1 companion log
+  struct companion *logs[MAX_LOGS];  // companion watchers, in tab order
+  char log_name[MAX_LOGS][16];       // tab label
+  char log_pill[MAX_LOGS][14];       // status-pill prefix ("" = no pill)
+  int nlogs;
+  int log_tab;            // 0 script log, 1..nlogs = logs[log_tab-1]
 };
 
 /* ---------------- text ---------------- */
@@ -556,8 +560,11 @@ int panel_event(struct panel *p, const SDL_Event *e, const SDL_Rect *area)
       }
       return 1;
     }
-    if (p->companion && in_rect(&TAB_SCRIPT, p, mx, my)) { p->log_tab = 0; return 1; }
-    if (p->companion && in_rect(&TAB_COMP, p, mx, my)) { p->log_tab = 1; return 1; }
+    if (p->nlogs)
+      for (int t = 0; t <= p->nlogs; t++) {
+        SDL_Rect tr = logtab_rect(t);
+        if (in_rect(&tr, p, mx, my)) { p->log_tab = t; return 1; }
+      }
     for (unsigned i = 0; i < NQUICK; i++) {
       const struct quick *q = &QUICK[i];
       if (!in_rect(&q->r, p, mx, my)) continue;
@@ -733,7 +740,38 @@ int panel_take_text(struct panel *p, char *buf, size_t len)
 int panel_text_focused(struct panel *p) { return p->text_focus; }
 void panel_set_script(struct panel *p, struct script *s) { p->script = s; }
 void panel_set_power(struct panel *p, struct power *pw) { p->power = pw; }
-void panel_set_companion(struct panel *p, struct companion *c) { p->companion = c; }
+static void add_log(struct panel *p, struct companion *c, const char *name, const char *pill)
+{
+  if (!c || p->nlogs >= MAX_LOGS) return;
+  int i = p->nlogs++;
+  p->logs[i] = c;
+  snprintf(p->log_name[i], sizeof p->log_name[i], "%s", name);
+  snprintf(p->log_pill[i], sizeof p->log_pill[i], "%s", pill ? pill : "");
+}
+void panel_set_companion(struct panel *p, struct companion *c) { add_log(p, c, "Seedsow log", "Seedsow"); }
+void panel_set_ns2log(struct panel *p, struct companion *c) { add_log(p, c, "NS2 log", "SmileBASIC"); }
+
+// Most recent "N/M" progress token in a watcher's lines (newest first), e.g.
+// the host's 1/4..4/4 or Seedsow's attempt count. Returns 1 and fills out.
+static int last_ratio(struct companion *c, char *out, size_t n)
+{
+  static struct comp_line cl[COMP_LINES];
+  int k = companion_lines(c, cl, COMP_LINES);
+  for (int i = k - 1; i >= 0; i--) {
+    const char *t = cl[i].text;
+    int len = (int)strlen(t);
+    for (int j = len - 2; j >= 1; j--) {
+      if (t[j] == '/' && isdigit((unsigned char)t[j - 1]) && isdigit((unsigned char)t[j + 1])) {
+        int a = j - 1, b = j + 1;
+        while (a > 0 && isdigit((unsigned char)t[a - 1])) a--;
+        while (b + 1 < len && isdigit((unsigned char)t[b + 1])) b++;
+        snprintf(out, n, "%.*s", b - a + 1, t + a);
+        return 1;
+      }
+    }
+  }
+  return 0;
+}
 void panel_set_link(struct panel *p, int up) { p->link_up = up; }
 
 /* ---------------- render ---------------- */
@@ -916,26 +954,44 @@ static void render_script_panel(struct panel *p)
   shadow(r, lb, 9 * p->scale, 1.0f * p->scale);
   rrect(r, lb, 9 * p->scale, C_BTN, -1);
   float top = 0;
-  if (p->companion) {
-    // Tab pills: Script | Seedsow log
-    const SDL_Rect *tabs[2] = {&TAB_SCRIPT, &TAB_COMP};
-    const char *names[2] = {"Script", "Seedsow log"};
-    for (int t = 0; t < 2; t++) {
-      SDL_FRect tb2 = design_rect(p, tabs[t]);
+  if (p->nlogs) {
+    // Tab pills: Script | <watchers...>
+    for (int t = 0; t <= p->nlogs; t++) {
+      SDL_Rect tr = logtab_rect(t);
+      SDL_FRect tb2 = design_rect(p, &tr);
       int on = p->log_tab == t;
+      const char *name = t == 0 ? "Script" : p->log_name[t - 1];
       rrect(r, tb2, tb2.h / 2, on ? C_ACCENT : C_WELL, -1);
-      draw_text(p, names[t], 0, on ? C_WHITE : C_TEXT, (int)(tb2.x + tb2.w / 2), (int)(tb2.y + tb2.h / 2), 0);
+      draw_text(p, name, 0, on ? C_WHITE : C_TEXT, (int)(tb2.x + tb2.w / 2), (int)(tb2.y + tb2.h / 2), 0);
+    }
+    // Progress pills (SmileBASIC / Seedsow N/M), right-aligned on the tab row.
+    SDL_Rect row = logtab_rect(0);
+    float px = lb.x + lb.w - SS(p, 10), py = design_rect(p, &row).y, ph = design_rect(p, &row).h;
+    for (int i = p->nlogs - 1; i >= 0; i--) {
+      char ratio[16], label[40];
+      if (!p->log_pill[i][0] || !last_ratio(p->logs[i], ratio, sizeof ratio)) continue;
+      snprintf(label, sizeof label, "%s %s", p->log_pill[i], ratio);
+      int tw = 0, th = 0;
+      TTF_Font *f = p->font_small ? p->font_small : p->font_big;
+      TTF_SizeUTF8(f, label, &tw, &th);
+      float pw = tw + SS(p, 18);
+      SDL_FRect pr = {px - pw, py, pw, ph};
+      int done = 0; { const char *sl = strchr(ratio, '/'); done = sl && atoi(ratio) == atoi(sl + 1); }
+      rrect(r, pr, ph / 2, done ? (SDL_Color){30, 150, 60, 255} : C_WELL, -1);
+      draw_text(p, label, 0, done ? C_WHITE : C_TEXT, (int)(pr.x + pr.w / 2), (int)(pr.y + pr.h / 2), 0);
+      px = pr.x - SS(p, 8);
     }
     top = SS(p, 30);
   }
   SDL_Rect clip = {(int)lb.x + 2, (int)(lb.y + top) + 2, (int)lb.w - 4, (int)(lb.h - top) - 4};
-  if (p->companion && p->log_tab == 1) {
+  if (p->log_tab >= 1 && p->log_tab <= p->nlogs) {
+    struct companion *comp = p->logs[p->log_tab - 1];
     // Companion watcher: monospace, the watcher's own colours, newest at the bottom.
     static struct comp_line cl[COMP_LINES];
     int mlh = TTF_FontLineSkip(p->font_mono);
     int mfit = (int)((lb.h - top - SS(p, 16)) / (mlh ? mlh : 13));
     if (mfit > COMP_LINES) mfit = COMP_LINES;
-    int n = companion_lines(p->companion, cl, mfit);
+    int n = companion_lines(comp, cl, mfit);
     static const SDL_Color PAL[] = {
       {45, 45, 45, 255}, {150, 150, 150, 255}, {205, 50, 50, 255}, {30, 150, 60, 255},
       {190, 130, 0, 255}, {50, 100, 220, 255}, {160, 60, 180, 255}, {0, 140, 160, 255}};

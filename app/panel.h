@@ -44,5 +44,7 @@ void panel_set_script(struct panel *p, struct script *s);
 void panel_set_power(struct panel *p, struct power *pw);
 // Companion watcher shown in the log card's second tab (hidden when NULL).
 void panel_set_companion(struct panel *p, struct companion *c);
+// ns2jb host log shown in its own tab, with a SmileBASIC N/M progress pill.
+void panel_set_ns2log(struct panel *p, struct companion *c);
 
 #endif
