@@ -51,6 +51,7 @@ struct script {
   int nhl;
   atomic_int leds;
   atomic_int typing;
+  atomic_uint pulse;     // bumps on every OCR read and log line: a liveness beat
   struct capture *cap;
   struct power *power;
   struct frame_lib *frames;
@@ -87,6 +88,7 @@ static void logf_(struct script *s, const char *fmt, ...)
   else s->log_count++;
   snprintf(s->log[idx], SCRIPT_LOG_COLS, "%s", line);
   pthread_mutex_unlock(&s->lock);
+  atomic_fetch_add(&s->pulse, 1);
 }
 
 static struct script *self(lua_State *L)
@@ -157,7 +159,10 @@ static void fresh_text(lua_State *L, struct script *s, uint32_t since, char *buf
 {
   for (;;) {
     uint32_t started;
-    if (ocr_latest(s->ocr, buf, len, &started) && (int32_t)(started - since) >= 0) return;
+    if (ocr_latest(s->ocr, buf, len, &started) && (int32_t)(started - since) >= 0) {
+      atomic_fetch_add(&s->pulse, 1);  // a fresh look at the screen = still working
+      return;
+    }
     nap(L, s, 0.02);
   }
 }
@@ -391,6 +396,7 @@ static int l_wait(lua_State *L)
     unsigned seq = ocr_latest(s->ocr, buf, sizeof buf, NULL);
     if (seq && seq != last) {
       last = seq;
+      atomic_fetch_add(&s->pulse, 1);
       const char *label = classify(s, buf);
       if (label_in(L, 1, label)) { lua_pushstring(L, label); return 1; }
     }
@@ -839,6 +845,8 @@ int script_take_text(struct script *s, char *buf, size_t len)
   pthread_mutex_unlock(&s->lock);
   return n > 0;
 }
+
+unsigned script_pulse(struct script *s) { return atomic_load(&s->pulse); }
 
 void script_screen(struct script *s, char *buf, size_t len)
 {

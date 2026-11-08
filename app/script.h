@@ -39,6 +39,9 @@ void script_current(struct script *s, char *buf, size_t len);
 void script_note(struct script *s, const char *line);
 void script_stop(struct script *s);
 int script_running(struct script *s);
+// A counter that advances on every OCR read and log line while a script runs:
+// a liveness beat the UI can spin on to show the automation isn't stuck.
+unsigned script_pulse(struct script *s);
 
 // Controller input the running script wants; *active is 0 when idle.
 void script_get_input(struct script *s, struct link_state *out, int *active);

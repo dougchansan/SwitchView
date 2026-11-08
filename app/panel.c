@@ -169,6 +169,9 @@ struct panel {
   int disp_x, disp_y0, disp_lh;      // pixel: text left, row-0 centre, line height
   int sel_a, sel_b;                  // selected row range, inclusive; sel_a<0 = none
   int sel_dragging;
+
+  unsigned pulse_last;               // last script liveness beat seen
+  uint32_t pulse_ms;                 // when it last advanced (for the spinner)
 };
 
 /* ---------------- text ---------------- */
@@ -973,6 +976,21 @@ static void draw_log_selection(struct panel *p)
   }
 }
 
+// A small activity spinner. `working` (the script's liveness beat advanced
+// recently) spins an accent arc; a running-but-stalled script shows a static
+// grey ring instead, so a wedged run reads as frozen rather than busy.
+static void draw_spinner(struct panel *p, float cx, float cy, float rad, int working)
+{
+  SDL_Color col = working ? C_ACCENT : (SDL_Color){165, 165, 165, 255};
+  float thick = 2.2f * p->scale;
+  if (working) {
+    float ph = SDL_GetTicks() / 1000.0f * 5.2f;   // radians/sec
+    arc_aa(p->ren, cx, cy, rad, thick, ph, ph + 4.9f, col);  // ~280-degree sweep
+  } else {
+    arc_aa(p->ren, cx, cy, rad, thick, 0, (float)(2 * M_PI), col);  // full, still
+  }
+}
+
 static void render_script_panel(struct panel *p)
 {
   SDL_Renderer *r = p->ren;
@@ -1065,6 +1083,17 @@ static void render_script_panel(struct panel *p)
     // Progress pills (SmileBASIC / Seedsow N/M), right-aligned on the tab row.
     SDL_Rect row = logtab_rect(0);
     float px = lb.x + lb.w - SS(p, 10), py = design_rect(p, &row).y, ph = design_rect(p, &row).h;
+    // Liveness spinner at the far right while a script runs; pills flow to its
+    // left. It spins only while the automation keeps working (reading the
+    // screen / logging), so a stuck run shows a frozen ring, not a busy one.
+    if (running) {
+      unsigned pulse = script_pulse(p->script);
+      if (pulse != p->pulse_last) { p->pulse_last = pulse; p->pulse_ms = SDL_GetTicks(); }
+      int working = SDL_GetTicks() - p->pulse_ms < 4000;
+      float sr = ph * 0.42f;
+      draw_spinner(p, px - sr, py + ph / 2, sr, working);
+      px -= 2 * sr + SS(p, 10);
+    }
     for (int i = p->nlogs - 1; i >= 0; i--) {
       char ratio[16], label[40];
       if (!p->log_pill[i][0] || !last_ratio(p->logs[i], ratio, sizeof ratio)) continue;
