@@ -309,8 +309,10 @@ static void key(struct script *s, const char *name, int shift, int ms)
 // Builds the script; returns bytes of input covered (may stop early on size).
 static size_t build(struct script *s, const char *text, size_t len)
 {
-  int ms = env_int("SV_FLIPPER_KEY_MS", 50, 20, 250);
-  int start = env_int("SV_FLIPPER_START_MS", 3000, 500, 15000);
+  // Key hold and gap; raise SV_FLIPPER_KEY_MS if the console drops characters.
+  int ms = env_int("SV_FLIPPER_KEY_MS", 10, 5, 250);
+  // Lead-in after Bad KB starts, while the console sees its USB keyboard.
+  int start = env_int("SV_FLIPPER_START_MS", 1500, 300, 15000);
   sadd(s, "REM SwitchView keyboard job\nDELAY %d\n", start);
   s->ms += start;
   size_t i = 0;
@@ -318,7 +320,7 @@ static size_t build(struct script *s, const char *text, size_t len)
     unsigned char c = (unsigned char)text[i];
     char one[2] = {(char)c, 0};
     switch (c) {
-    case '\n': key(s, "ENTER", 0, ms > 100 ? ms : 100); break;
+    case '\n': key(s, "ENTER", 0, ms > 40 ? ms : 40); break;
     case '\r': if (i + 1 < len && text[i + 1] == '\n') break; key(s, "ENTER", 0, 100); break;
     case '\b': key(s, "BACKSPACE", 0, ms); break;
     case '\t': key(s, "TAB", 0, ms); break;
@@ -362,11 +364,11 @@ long flipper_type(const char *host, int port, const char *text, size_t len, char
   pb_blob(&st, 1, "Bad KB", 6);
   pb_blob(&st, 2, REMOTE, strlen(REMOTE));
   if (request(&c, F_APP_START, st.p, st.n, NULL)) goto out;
-  usleep(2000 * 1000);  // Bad KB loads the script before it takes input
+  usleep((useconds_t)env_int("SV_FLIPPER_LOAD_MS", 1200, 200, 10000) * 1000);  // Bad KB loads the script first
   if (input(&c, KEY_OK)) goto out;
   {
     // Wait the script's own duration plus parser/USB overhead, then leave.
-    long wait = s.ms + s.ms / 4 + env_int("SV_FLIPPER_CLOSE_MS", 2500, 0, 30000);
+    long wait = s.ms + s.ms / 8 + env_int("SV_FLIPPER_CLOSE_MS", 800, 0, 30000);
     long end = mono_ms() + wait;
     while (mono_ms() < end) {
       usleep(500 * 1000);
