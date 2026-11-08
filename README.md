@@ -247,6 +247,10 @@ cp rig.env.example rig.env      # board / fingerbot addresses
 open -a Terminal tools/switchview.command
 ```
 
+If `SV_FINGERBOT` points at this Mac and nothing answers there, the launcher
+starts `$NS2_DIR/fingerbot/serve.command` in the background (log:
+`$TMPDIR/fingerbot.log`), so the power buttons work after a reboot.
+
 ### One-click navigation
 
 The buttons above the log (**Seedsow**, **SB Direct**, **HTTP Console**) run
