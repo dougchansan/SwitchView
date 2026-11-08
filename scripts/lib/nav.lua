@@ -27,6 +27,15 @@ nav.TILES = {"smilebasic", "seedsow", "lullaby", "mario kart", "sports resort", 
 nav.MATCH_MAX = 6        -- learned-screen distance that counts as "this screen"
 nav.verbose = true
 
+-- When the RPC is wedged ("rpc running" with no prompt) the fix is to close and
+-- relaunch the software. If that keeps failing - the screen never comes back, or
+-- each relaunch comes up wedged again - escalate to a hard console reboot (force
+-- off + boot). Tunable; set SV_WEDGE_HARD_REBOOT=0 to keep the old soft-only loop.
+nav.WEDGE_HARD_REBOOT = os.getenv("SV_WEDGE_HARD_REBOOT") ~= "0"
+nav.WEDGE_LOOKS = tonumber(os.getenv("SV_WEDGE_LOOKS") or "6")   -- wedged looks in a row -> reboot
+nav.WEDGE_FRESHES = tonumber(os.getenv("SV_WEDGE_FRESHES") or "3") -- soft relaunches -> reboot
+nav.WEDGE_REBOOTS = tonumber(os.getenv("SV_WEDGE_REBOOTS") or "2") -- hard reboots before giving up
+
 local function say(...) if nav.verbose then log(...) end end
 local function has(t, s) return t:find((s:gsub("%s", "")), 1, true) ~= nil end
 local function word(t, w) return t:find("%f[%w]" .. w .. "%f[%W]") ~= nil end
@@ -261,8 +270,23 @@ function nav.go(name, opts)
   local launched, resumed, fresh = false, 0, opts.fresh
   local launched_at = 0
   local waited = false
+  local wedged_looks, fresh_count, reboots = 0, 0, 0
+
+  -- Hard console reboot (force off + boot), the escalation for a stuck RPC.
+  local function hard_reboot()
+    say("rpc wedged -> HARD REBOOT (force off + boot)")
+    local ok, ran = pcall(function() return power("restart") end)
+    if not ok or not ran then
+      say("hard reboot unavailable (no fingerbot configured?)")
+      return false
+    end
+    settle(2)
+    return true
+  end
+
   for step = 1, opts.steps or 40 do
     local s, txt, title = nav.look()
+    if s ~= "wedged-rpc" then wedged_looks = 0 end
     if T.done[s] then
       say(string.format("%s reached (%s) in %.1f s", name, s, now() - t0))
       return true, s
@@ -278,9 +302,21 @@ function nav.go(name, opts)
       end
     end
     if T.fresh_on and T.fresh_on[s] then
-      say(s .. " -> needs a fresh start of the software")
-      fresh = true
-      nav.press("HOME")
+      wedged_looks = wedged_looks + 1
+      -- Escalate when the soft fix isn't working: the wedged screen won't clear
+      -- (many looks in a row) or every relaunch comes back wedged.
+      local stuck = wedged_looks >= nav.WEDGE_LOOKS or fresh_count >= nav.WEDGE_FRESHES
+      if nav.WEDGE_HARD_REBOOT and stuck and reboots < nav.WEDGE_REBOOTS then
+        reboots = reboots + 1
+        wedged_looks, fresh_count = 0, 0
+        if hard_reboot() then launched, launched_at, fresh = false, 0, false end
+      elseif stuck and reboots >= nav.WEDGE_REBOOTS then
+        return false, "rpc wedged; hard reboot did not clear it"
+      else
+        say(s .. " -> needs a fresh start of the software")
+        fresh = true
+        nav.press("HOME")
+      end
     elseif T.on[s] then
       say(s .. " -> handled")
       T.on[s]()
@@ -304,6 +340,7 @@ function nav.go(name, opts)
       local ok, why = nav.select_tile(T.tile, T.avoid)
       if ok and fresh then
         nav.close_selected(); fresh = false
+        fresh_count = fresh_count + 1
         ok, why = nav.select_tile(T.tile, T.avoid)
       end
       if not ok then
