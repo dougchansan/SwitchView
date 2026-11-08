@@ -136,11 +136,22 @@ end
 local RUNS = runs_dir()
 local HOST_LOG = RUNS and RUNS:gsub("/runs$", "") .. "/host.log" or "/tmp/switchview-ns2.log"
 
+-- Run folders, newest first. The host is asked to use RUNS (NS2_RUNS_DIR), but
+-- some versions always write to runs/ next to run.cjs, so look in both.
+local function run_files(name)
+  local globs = {}
+  for _, d in ipairs{RUNS, hostdir .. "/runs"} do
+    if d then globs[#globs + 1] = '"' .. d .. '"/switch2-*/' .. name end
+  end
+  return io.popen("ls -1t " .. table.concat(globs, " ") .. " 2>/dev/null")
+end
+
 -- The address the console dials: NS2_HOST, else the one the last run used
 -- (the host records it in connect.txt), else the shared-link default.
 local function last_host()
-  if not RUNS then return nil end
-  local path = first_line('ls -1t "' .. RUNS .. '"/switch2-*/connect.txt')
+  local p = run_files("connect.txt")
+  local path = p and p:read("*l")
+  if p then p:close() end
   local line = path and read_line(path)
   if not line then return nil end
   local a, b, c, d = line:match("^V=START%(%d+,(%d+),(%d+),(%d+),(%d+)%)")
@@ -200,15 +211,25 @@ local function tail_host_log()
   end
 end
 
+-- Run folders that existed before this run's host started; a stale one
+-- without result.json must not be mistaken for the new run.
+local old_runs = {}
+local function remember_old_runs()
+  old_runs = {}
+  local p = run_files("connect.txt")
+  if not p then return end
+  for line in p:lines() do old_runs[line] = true end
+  p:close()
+end
+
 -- Newest run folder that has not finished yet (result.json absent).
 local function waiting_run()
-  if not RUNS then return nil end
-  local p = io.popen('ls -1t "' .. RUNS .. '"/switch2-*/connect.txt 2>/dev/null')
+  local p = run_files("connect.txt")
   if not p then return nil end
   local found
   for line in p:lines() do
     local dir = (line:gsub("/connect%.txt$", ""))
-    if not exists(dir .. "/result.json") then found = dir; break end
+    if not old_runs[line] and not exists(dir .. "/result.json") then found = dir; break end
   end
   p:close()
   return found
@@ -280,6 +301,7 @@ local function ensure_host()
     log("Node 22+ not found - set NS2_NODE")
     return nil
   end
+  remember_old_runs()
   if not start_host(node) then return nil end
   local deadline = os.time() + 15
   while os.time() < deadline do
