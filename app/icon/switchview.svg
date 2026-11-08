@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- SwitchView app icon: a screen that is also a pad, with a stream signal. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1d2a5b"/>
+      <stop offset="1" stop-color="#0b1026"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f6bff"/>
+      <stop offset="1" stop-color="#1846c9"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7fd4ff"/>
+      <stop offset="1" stop-color="#3aa0ff"/>
+    </linearGradient>
+  </defs>
+
+  <!-- macOS-style tile with margin -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="4"/>
+
+  <!-- stream arcs -->
+  <g fill="none" stroke="url(#glow)" stroke-linecap="round">
+    <path d="M 432 300 A 112 112 0 0 1 592 300" stroke-width="30"/>
+    <path d="M 382 250 A 182 182 0 0 1 642 250" stroke-width="30" stroke-opacity="0.65"/>
+  </g>
+  <circle cx="512" cy="338" r="22" fill="#7fd4ff"/>
+
+  <!-- screen -->
+  <rect x="222" y="398" width="580" height="350" rx="58" fill="url(#screen)"/>
+  <rect x="222" y="398" width="580" height="350" rx="58" fill="none" stroke="#ffffff" stroke-opacity="0.25" stroke-width="6"/>
+
+  <!-- d-pad -->
+  <g fill="#ffffff">
+    <rect x="318" y="518" width="48" height="148" rx="12"/>
+    <rect x="268" y="568" width="148" height="48" rx="12"/>
+  </g>
+
+  <!-- face buttons -->
+  <circle cx="640" cy="548" r="38" fill="#ffffff"/>
+  <circle cx="712" cy="624" r="38" fill="#ffd34d"/>
+
+  <!-- live dot -->
+  <circle cx="512" cy="680" r="14" fill="#ff5a6e"/>
+</svg>

@@ -109,6 +109,18 @@ int main(int argc, char **argv)
                                          (vsync ? SDL_RENDERER_PRESENTVSYNC : 0));
   if (!win || !ren) { fprintf(stderr, "SDL window/renderer: %s\n", SDL_GetError()); return 1; }
   SDL_RaiseWindow(win);  // launched from a terminal: come to the front
+  {
+    // Window (and macOS Dock) icon: app/icon/switchview.bmp beside the binary.
+    char *base = SDL_GetBasePath();
+    char icon_path[1024];
+    snprintf(icon_path, sizeof icon_path, "%sicon/switchview.bmp", base ? base : "");
+    SDL_free(base);
+    SDL_Surface *icon = SDL_LoadBMP(icon_path);
+    if (icon) {
+      SDL_SetWindowIcon(win, icon);
+      SDL_FreeSurface(icon);
+    }
+  }
   SDL_RendererInfo ri;
   SDL_GetRendererInfo(ren, &ri);
   fprintf(stderr, "render: %s, vsync %s\n", ri.name, vsync ? "on" : "off");

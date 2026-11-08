@@ -19,6 +19,7 @@ Configuration comes from the environment (see switchview-stream.conf).
 the pipeline without a capture card (also works on a Mac).
 """
 
+import collections
 import os
 import select
 import shlex
@@ -33,6 +34,10 @@ CHUNK = TS * 7          # 1316: fits a 1500-byte MTU with IP/UDP headers
 CLIENT_TIMEOUT = 3.0    # forget a client this long after its last hello
 IDLE_STOP = 15.0        # stop ffmpeg this long after the last client left
 MAGIC = b"SVSTREAM1 "
+# Pacing. The Pi's keyframes reach ~350 KB; sent back to back at gigabit speed
+# they overflow the router's queue toward a slower Wi-Fi client, and the same
+# part of every keyframe is lost (a glitch band mid-screen until the next one).
+# Sending at a steady rate with a small burst allowance avoids that.
 
 
 def env(name, default):
@@ -204,6 +209,14 @@ class Relay:
         self.pending = b""
         self.last_client = 0.0
         self.next_start = 0.0
+        self.queue = collections.deque()
+        self.pace = float(env("PACE_MBPS", "80")) * 1e6 / 8  # bytes per second
+        self.burst = max(CHUNK, int(env("PACE_BURST", "4")) * CHUNK)  # in datagrams
+        self.tokens = self.burst
+        # Debugging: DUMP_TS=/path writes exactly what is sent, for comparing
+        # with what a client received.
+        self.dump = open(env("DUMP_TS", ""), "wb") if env("DUMP_TS", "") else None
+        self.last_refill = time.monotonic()
         log(f"listening on UDP {port}{' (test pattern)' if test else ''}")
 
     def start(self):
@@ -211,6 +224,7 @@ class Relay:
         log("starting:", " ".join(shlex.quote(c) for c in cmd))
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=0)
         self.pending = b""
+        self.queue.clear()
         self.started = time.monotonic()
 
     def stop(self, why):
@@ -249,14 +263,35 @@ class Relay:
         buf = self.pending + data
         n = len(buf) - len(buf) % TS
         self.pending = buf[n:]
+        if self.dump and self.clients:
+            self.dump.write(buf[:n])
+            self.dump.flush()
+        # Stop at n: the partial packet after it stays in pending for next time.
         for off in range(0, n, CHUNK):
-            chunk = buf[off:off + CHUNK]
+            self.queue.append(buf[off:min(off + CHUNK, n)])
+        self.flush()
+
+    def flush(self):
+        """Sends queued chunks as the pacing budget allows; returns seconds until
+        the next one may go (None when the queue is empty)."""
+        now = time.monotonic()
+        if self.pace <= 0:
+            self.tokens = float("inf")
+        else:
+            self.tokens = min(self.burst, self.tokens + (now - self.last_refill) * self.pace)
+        self.last_refill = now
+        while self.queue and self.tokens >= len(self.queue[0]):
+            chunk = self.queue.popleft()
+            self.tokens -= len(chunk)
             for addr in list(self.clients):
                 try:
                     self.sock.sendto(chunk, addr)
                 except OSError as e:  # e.g. EHOSTUNREACH while Wi-Fi roams
                     if e.errno not in (11, 35, 55, 64, 65, 105):
                         log(f"send to {addr[0]}: {e}")
+        if not self.queue:
+            return None
+        return (len(self.queue[0]) - self.tokens) / self.pace
 
     def run(self):
         while True:
@@ -272,8 +307,9 @@ class Relay:
             elif self.proc and now - self.last_client > IDLE_STOP:
                 self.stop("no viewers")
 
+            wait = self.flush()
             fds = [self.sock] + ([self.proc.stdout] if self.proc else [])
-            ready, _, _ = select.select(fds, [], [], 0.25)
+            ready, _, _ = select.select(fds, [], [], 0.25 if wait is None else max(wait, 0.0005))
             for f in ready:
                 if f is self.sock:
                     try:
