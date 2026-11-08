@@ -157,8 +157,10 @@ static void *run(void *arg)
     // Hold to raise the HOME Power menu, then leave the dialog up for a script
     // (or the user) to pick Restart. The exact hold that shows the menu (vs a
     // short press that sleeps) is console-specific; tune with SV_MENU_S.
+    // 4 s sometimes released before the menu came up on the rig; 5 s is safe
+    // (a force-off needs 16 s).
     const char *e = getenv("SV_MENU_S");
-    double menu_s = e && atof(e) > 0 ? atof(e) : 4.0;
+    double menu_s = e && atof(e) > 0 ? atof(e) : 5.0;
     travel(p);
     say(p, "menu press %.1f s", menu_s);
     if (press(p, menu_s)) say(p, "power menu should be up (pick Restart)");
