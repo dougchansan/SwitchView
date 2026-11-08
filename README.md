@@ -247,6 +247,14 @@ cp rig.env.example rig.env      # board / fingerbot addresses
 open -a Terminal tools/switchview.command
 ```
 
+Or install a launcher you can start from Applications, Launchpad or the Dock
+(it runs this checkout, so re-run it if the repo moves):
+
+```sh
+tools/make-app.sh               # -> /Applications/SwitchView.app
+```
+
+Both launchers rebuild when sources changed and log to `$TMPDIR/switchview.log`.
 If `SV_FINGERBOT` points at this Mac and nothing answers there, the launcher
 starts `$NS2_DIR/fingerbot/serve.command` in the background (log:
 `$TMPDIR/fingerbot.log`), so the power buttons work after a reboot.
