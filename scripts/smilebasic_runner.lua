@@ -97,6 +97,20 @@ local function expect_any(a, b, timeout)
   return nil
 end
 
+-- Back at the Direct-mode prompt: the command just typed has finished when an
+-- OK sits directly above the [WORKSPACE] bar (while it runs, the command line
+-- itself is the last line). The start-up banner's "bytes free" is no proof:
+-- it is only there until a few lines scroll it away or CLS clears it.
+local function at_prompt(timeout)
+  local deadline = os.time() + timeout
+  while os.time() < deadline do
+    dismiss_error()
+    if ((text() or ""):lower():gsub("%s", "")):find("ok%[?workspace") then return true end
+    sleep(0.3)
+  end
+  return false
+end
+
 -- ---------------- host side ----------------
 
 -- The app loads us as <repo>/scripts/<name>.lua, so our own source path is
@@ -397,7 +411,7 @@ if expect("load the file", 8) then
   tap("A")
   sleep(1.5)
 end
-if not expect("bytes free", 20) then
+if not at_prompt(20) then
   give_up("LOAD failed - not back in Direct mode")
   return
 end
@@ -416,7 +430,7 @@ log("REMOVE issued")
 
 -- "DIST BOOT READY" stays on screen, so the screen is still labelled
 -- "loaded"; the status line is what proves we are back at the prompt.
-if not expect("bytes free", 10) then
+if not at_prompt(10) then
   give_up("REMOVE failed - not back in Direct mode")
   return
 end
