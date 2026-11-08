@@ -73,10 +73,12 @@ static const SDL_Rect SCRIPT_LOG = {735, 150, 520, 256};
 enum { Q_NAV, Q_POWER };
 struct quick { const char *label, *arg; int kind, confirm; SDL_Rect r; };
 static const struct quick QUICK[] = {
-  {"Seedsow", "goto_seedsow.lua", Q_NAV, 0, {735, 64, 122, 34}},
-  {"SB Direct", "goto_smilebasic.lua", Q_NAV, 0, {867, 64, 122, 34}},
-  {"HTTP Console", "goto_console.lua", Q_NAV, 0, {999, 64, 122, 34}},
-  {"NS2 Run", "smilebasic_runner.lua", Q_NAV, 0, {1131, 64, 124, 34}},
+  {"Seedsow", "goto_seedsow.lua", Q_NAV, 0, {735, 64, 100, 34}},
+  {"SB Direct", "goto_smilebasic.lua", Q_NAV, 0, {840, 64, 100, 34}},
+  {"HTTP Console", "goto_console.lua", Q_NAV, 0, {945, 64, 100, 34}},
+  {"NS2 Run", "smilebasic_runner.lua", Q_NAV, 0, {1050, 64, 100, 34}},
+  // NS2 Run until 4/4, with a Hard Restart between attempts (scripts/ns2_loop.lua).
+  {"NS2 Loop", "ns2_loop.lua", Q_NAV, 0, {1155, 64, 100, 34}},
   {"Sleep/Wake", "toggle", Q_POWER, 0, {735, 106, 100, 34}},
   {"Boot", "boot", Q_POWER, 0, {840, 106, 100, 34}},
   {"Fast Restart", "fast_restart.lua", Q_NAV, 0, {945, 106, 100, 34}},

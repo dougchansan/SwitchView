@@ -361,7 +361,12 @@ end
 
 -- ---------------- run ----------------
 
-local function give_up(msg)
+-- NS2_OUTCOME (a global) tells scripts/ns2_loop.lua how this run ended:
+-- "verified" (4/4), "setup" (nothing a console restart fixes: stop looping),
+-- or "retry" (the console or the host run failed: hard restart, run again).
+NS2_OUTCOME = nil
+local function give_up(msg, kind)
+  NS2_OUTCOME = kind or "retry"
   tail_host_log()
   log(msg)
   if owns_host then despawn_host() end
@@ -376,7 +381,7 @@ else
   run_dir = ensure_host()
   owns_host = run_dir ~= nil
   if not run_dir then
-    give_up("Host not started - console untouched (check NS2_NODE / NS2_DIR)")
+    give_up("Host not started - console untouched (check NS2_NODE / NS2_DIR)", "setup")
     return
   end
   local line = read_line(run_dir .. "/connect.txt")
@@ -468,6 +473,11 @@ if outcome == "boot failed" then
   give_up("BOOT FAILED - check the host address, then restart SmileBASIC")
   return
 end
+if outcome == nil and run_dir then
+  -- Otherwise the host waits for the console forever and so would we.
+  give_up("Console never connected to the host")
+  return
+end
 
 if not run_dir then
   log("No run folder to watch")
@@ -481,9 +491,13 @@ while true do
   local result = read_all(run_dir .. "/result.json")
   if result then
     tail_host_log()
-    if result:find('"verified": true', 1, true) then
+    -- Top-level "verified" only: result.json nests bootstrap.verified, which is
+    -- true even when the run stopped at 2/4.
+    if result:find('\n  "verified": true', 1, true) then
+      NS2_OUTCOME = "verified"
       log("Verified - instructions restored, restart the console")
     else
+      NS2_OUTCOME = "retry"
       log("Host reported: " .. (result:match('"error":%s*"([^"]*)"') or "run failed"))
       log("Details: " .. run_dir)
     end
@@ -495,6 +509,7 @@ while true do
   -- listener disappearing is normal and not used here.)
   if owns_host and not alive(host_pid) then
     tail_host_log()
+    NS2_OUTCOME = "retry"
     log("Host exited without a result - see " .. HOST_LOG)
     return
   end
