@@ -371,7 +371,7 @@ long flipper_type(const char *host, int port, const char *text, size_t len, char
     long wait = s.ms + s.ms / 8 + env_int("SV_FLIPPER_CLOSE_MS", 800, 0, 30000);
     long end = mono_ms() + wait;
     while (mono_ms() < end) {
-      usleep(500 * 1000);
+      usleep(150 * 1000);
       int lk = app_locked(&c);
       if (lk == 0) { rc = (long)used; goto out; }  // already closed itself
       if (lk < 0) goto out;

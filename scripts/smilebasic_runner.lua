@@ -65,7 +65,7 @@ end
 
 local function enter(line)
   type(line .. "\n")
-  sleep(0.4)
+  sleep(0.1)
 end
 
 local function dismiss_error()
@@ -81,7 +81,7 @@ local function expect(word, timeout)
   while os.time() < deadline do
     dismiss_error()
     if find(word) then return true end
-    sleep(0.5)
+    sleep(0.3)
   end
   return false
 end
@@ -92,7 +92,7 @@ local function expect_any(a, b, timeout)
     dismiss_error()
     if find(a) then return a end
     if find(b) then return b end
-    sleep(0.5)
+    sleep(0.3)
   end
   return nil
 end
@@ -412,7 +412,6 @@ log("Bootstrap ran")
 
 -- Expected "Out of memory"; the demo's REMOVE is deliberately oversized.
 enter("REMOVE NSR,&H60000000,&H3FFFFFFF")
-sleep(2)
 log("REMOVE issued")
 
 -- "DIST BOOT READY" stays on screen, so the screen is still labelled
