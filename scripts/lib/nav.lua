@@ -60,6 +60,9 @@ function nav.classify(t, title)
   end
   if has(q, "bytes free") and word(t, "ok") then return "direct-mode" end
   if has(q, "rpc stop") and word(t, "ok") then return "direct-mode" end
+  -- The banner scrolls away (or CLS clears it) once a few lines are typed; the
+  -- Direct-mode prompt is then just the last "OK" above the [WORKSPACE] bar.
+  if q:find("ok%[?workspace") then return "direct-mode" end
   if has(q, "are you sure") or has(q, "load the file") then return "sb-confirm" end
   if has(q, "three times") then return "lock-screen" end
   if has(q, "close the software") or has(q, "unsaved data") or has(q, "will be closed")
