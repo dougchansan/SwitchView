@@ -1,14 +1,23 @@
-// Elgato capture: V4L2 video (mmap, newest-frame-wins) + ALSA audio.
+// Capture: video (newest-frame-wins) + audio, platform specific.
+//   Linux: V4L2 (mmap) + ALSA
+//   macOS: AVFoundation (AVCaptureVideoDataOutput) + CoreAudio via SDL
 #ifndef SV_CAPTURE_H
 #define SV_CAPTURE_H
 
 #include <SDL2/SDL.h>
 #include <stdint.h>
 
+// Requested pixel format. NV12 is the fast path everywhere; YUYV is a
+// Linux-only fallback for devices that cannot produce NV12.
+enum {
+  SV_PIX_NV12 = 1,
+  SV_PIX_YUYV = 2,
+};
+
 struct capture_opts {
   const char *video_dev, *audio_dev;
   int width, height, fps;
-  unsigned fourcc;  // V4L2_PIX_FMT_NV12 or V4L2_PIX_FMT_YUYV
+  int format;  // SV_PIX_*
   int no_audio;
   int audio_max_ms;  // drop input beyond this much queued output
 };
@@ -34,9 +43,14 @@ double capture_audio_queued_ms(struct capture *c);
 // number, 0 if none yet.
 void capture_want_luma(struct capture *c);
 unsigned capture_copy_luma(struct capture *c, uint8_t *dst);
+// Sequence number of the latest snapshot, without copying it.
+unsigned capture_luma_seq(struct capture *c);
 
 // Muting keeps capture running (so unmute is instant) but drops the audio.
 void capture_set_muted(struct capture *c, int muted);
 int capture_muted(struct capture *c);
+
+// Prints the capture devices this platform offers (for -d / -a).
+void capture_list_devices(void);
 
 #endif

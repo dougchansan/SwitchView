@@ -1,4 +1,5 @@
 #include "script.h"
+#include "http.h"
 #include "switchview_proto.h"
 
 #include <SDL2/SDL.h>
@@ -49,6 +50,12 @@ struct script {
   char hl[MAX_RULE_WORDS][64];
   int nhl;
   atomic_int leds;
+  atomic_int typing;
+  struct capture *cap;
+  struct power *power;
+  struct frame_lib *frames;
+  struct frame_shot mark;   // reference for changed()
+  int have_mark;
 };
 
 static const struct { const char *name; uint32_t bit; } BUTTONS[] = {
@@ -263,7 +270,24 @@ static int l_stick(lua_State *L)
   return 0;
 }
 
-// type("hello\n") - queued to the keyboard; waits roughly as long as typing takes.
+// Wait until the main loop has handed our text to the link and the keyboard
+// (UDP queue or a Flipper Bad KB job) reports idle again.
+static void wait_typed(lua_State *L, struct script *s, double max_s)
+{
+  uint32_t end = SDL_GetTicks() + (uint32_t)(max_s * 1000);
+  for (;;) {
+    pthread_mutex_lock(&s->lock);
+    size_t left = s->textq_len;
+    pthread_mutex_unlock(&s->lock);
+    if (!left) break;
+    if ((int32_t)(end - SDL_GetTicks()) <= 0) return;
+    nap(L, s, 0.01);
+  }
+  nap(L, s, 0.08);  // one main-loop pass so the link reports busy
+  while (atomic_load(&s->typing) && (int32_t)(end - SDL_GetTicks()) > 0) nap(L, s, 0.02);
+}
+
+// type("hello\n") - queued to the keyboard; returns once it has been typed.
 static int l_type(lua_State *L)
 {
   struct script *s = self(L);
@@ -275,7 +299,7 @@ static int l_type(lua_State *L)
   memcpy(s->textq + s->textq_len, t, n);
   s->textq_len += n;
   pthread_mutex_unlock(&s->lock);
-  nap(L, s, 0.1 + n / (double)SV_TEXT_CHARS_PER_SEC);
+  wait_typed(L, s, 30 + n / 2.0);
   return 0;
 }
 
@@ -295,7 +319,7 @@ static int l_key(lua_State *L)
       pthread_mutex_lock(&s->lock);
       if (s->textq_len + 1 < sizeof s->textq) s->textq[s->textq_len++] = KEYS[k].ch;
       pthread_mutex_unlock(&s->lock);
-      nap(L, s, 0.25);
+      wait_typed(L, s, 30);
       return 0;
     }
   return luaL_error(L, "unknown key '%s'", n);
@@ -462,6 +486,177 @@ static int l_region(lua_State *L)
   return 0;
 }
 
+// band(y0, y1) -> OCR text whose word centres lie between y0 and y1 (0..1,
+// top = 0), from a fresh read. The home menu shows the selected tile's
+// title in band(0.15, 0.32).
+static int l_band(lua_State *L)
+{
+  struct script *s = self(L);
+  double y0 = luaL_checknumber(L, 1), y1 = luaL_checknumber(L, 2);
+  double x0 = luaL_optnumber(L, 3, 0), x1 = luaL_optnumber(L, 4, 1);
+  char buf[64];
+  fresh_text(L, s, SDL_GetTicks(), buf, sizeof buf);
+  static struct ocr_box boxes[OCR_MAX_BOXES];  // script thread only
+  int n = 0;
+  ocr_boxes(s->ocr, boxes, OCR_MAX_BOXES, &n);
+  unsigned fw = capture_width(s->cap), fh = capture_height(s->cap);
+  luaL_Buffer b;
+  luaL_buffinit(L, &b);
+  int first = 1;
+  for (int i = 0; i < n; i++) {
+    double cy = (boxes[i].y + boxes[i].h / 2.0) / (fh ? fh : 1);
+    double cx = (boxes[i].x + boxes[i].w / 2.0) / (fw ? fw : 1);
+    if (cy < y0 || cy > y1 || cx < x0 || cx > x1) continue;
+    if (!first) luaL_addchar(&b, ' ');
+    luaL_addstring(&b, boxes[i].word);
+    first = 0;
+  }
+  luaL_pushresult(&b);
+  return 1;
+}
+
+static int grab(lua_State *L, struct script *s, struct frame_shot *out, int timeout_ms)
+{
+  if (atomic_load(&s->stop)) luaL_error(L, "stopped");
+  return frame_grab(s->cap, out, timeout_ms);
+}
+
+// flat() -> true when the picture is uniform (black / no signal / no frames),
+// plus the frame's mean and standard deviation of luma.
+static int l_flat(lua_State *L)
+{
+  struct script *s = self(L);
+  struct frame_shot f;
+  if (grab(L, s, &f, 600) != 0) {
+    lua_pushboolean(L, 1); lua_pushnumber(L, 0); lua_pushnumber(L, 0);
+    return 3;
+  }
+  lua_pushboolean(L, frame_flat(&f));
+  lua_pushnumber(L, f.mean);
+  lua_pushnumber(L, f.sd);
+  return 3;
+}
+
+// match() -> label, distance of the nearest learned screen (nil if none).
+// Distances below ~6 are the same screen; 6-15 a close variant.
+static int l_match(lua_State *L)
+{
+  struct script *s = self(L);
+  struct frame_shot f;
+  if (!s->frames || grab(L, s, &f, 600) != 0) { lua_pushnil(L); lua_pushnumber(L, 999); return 2; }
+  char label[64];
+  float d = frame_lib_match(s->frames, &f, label, sizeof label);
+  if (label[0]) lua_pushstring(L, label); else lua_pushnil(L);
+  lua_pushnumber(L, d);
+  return 2;
+}
+
+// learn(label) - remember the current screen under label (adds a sample).
+static int l_learn(lua_State *L)
+{
+  struct script *s = self(L);
+  const char *label = luaL_checkstring(L, 1);
+  struct frame_shot f;
+  int ok = s->frames && grab(L, s, &f, 1000) == 0 && frame_lib_learn(s->frames, label, &f) == 0;
+  if (ok) logf_(s, "learned screen '%s'", label);
+  lua_pushboolean(L, ok);
+  return 1;
+}
+
+// mark() - take the reference frame for changed().
+static int l_mark(lua_State *L)
+{
+  struct script *s = self(L);
+  s->have_mark = grab(L, s, &s->mark, 600) == 0;
+  return 0;
+}
+
+// changed(timeout=2, threshold=4) -> true once the screen differs from mark().
+static int l_changed(lua_State *L)
+{
+  struct script *s = self(L);
+  double timeout = luaL_optnumber(L, 1, 2);
+  double th = luaL_optnumber(L, 2, 4);
+  uint32_t end = SDL_GetTicks() + (uint32_t)(timeout * 1000);
+  if (!s->have_mark) { lua_pushboolean(L, 1); return 1; }
+  while ((int32_t)(end - SDL_GetTicks()) > 0) {
+    struct frame_shot f;
+    if (grab(L, s, &f, 300) != 0) { lua_pushboolean(L, 1); return 1; }  // picture went away
+    if (frame_dist(&f, &s->mark) > th) { lua_pushboolean(L, 1); return 1; }
+  }
+  lua_pushboolean(L, 0);
+  return 1;
+}
+
+// settle(timeout=1.5, threshold=1.5) -> true once two frames ~80 ms apart
+// agree (menus finished animating).
+static int l_settle(lua_State *L)
+{
+  struct script *s = self(L);
+  double timeout = luaL_optnumber(L, 1, 1.5);
+  double th = luaL_optnumber(L, 2, 1.5);
+  uint32_t end = SDL_GetTicks() + (uint32_t)(timeout * 1000);
+  struct frame_shot a, b;
+  if (grab(L, s, &a, 300) != 0) { lua_pushboolean(L, 0); return 1; }
+  while ((int32_t)(end - SDL_GetTicks()) > 0) {
+    nap(L, s, 0.08);
+    if (grab(L, s, &b, 300) != 0) { lua_pushboolean(L, 0); return 1; }
+    if (frame_dist(&a, &b) <= th) { lua_pushboolean(L, 1); return 1; }
+    a = b;
+  }
+  lua_pushboolean(L, 0);
+  return 1;
+}
+
+// power("toggle"|"boot"|"off"|"restart", wait=true) -> true if it ran.
+static int l_power(lua_State *L)
+{
+  struct script *s = self(L);
+  const char *action = luaL_checkstring(L, 1);
+  int wait = lua_isnone(L, 2) ? 1 : lua_toboolean(L, 2);
+  if (!s->power) return luaL_error(L, "no fingerbot configured (-B URL)");
+  if (power_start(s->power, action) != 0) { lua_pushboolean(L, 0); return 1; }
+  if (wait) {
+    nap(L, s, 0.05);
+    while (power_busy(s->power)) nap(L, s, 0.1);
+  }
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+// http(url, [body], [timeout_s=10]) -> status (or -1), body. POST with a body.
+static int l_http(lua_State *L)
+{
+  const char *url = luaL_checkstring(L, 1);
+  size_t bl = 0;
+  const char *body = lua_isstring(L, 2) ? lua_tolstring(L, 2, &bl) : NULL;
+  int timeout = (int)(luaL_optnumber(L, 3, 10) * 1000);
+  char *resp = malloc(65536);
+  int code = http_request(url, body ? "POST" : "GET", body, bl, resp, 65536, timeout);
+  lua_pushinteger(L, code);
+  lua_pushstring(L, resp);
+  free(resp);
+  return 2;
+}
+
+// typing() -> true while the keyboard is still busy.
+static int l_typing(lua_State *L)
+{
+  struct script *s = self(L);
+  pthread_mutex_lock(&s->lock);
+  int q = s->textq_len > 0;
+  pthread_mutex_unlock(&s->lock);
+  lua_pushboolean(L, q || atomic_load(&s->typing));
+  return 1;
+}
+
+// now() -> seconds since SwitchView started (for timing).
+static int l_now(lua_State *L)
+{
+  lua_pushnumber(L, SDL_GetTicks() / 1000.0);
+  return 1;
+}
+
 static void stop_hook(lua_State *L, lua_Debug *ar)
 {
   (void)ar;
@@ -490,9 +685,22 @@ static void *script_thread(void *arg)
     {"release", l_release}, {"dpad", l_dpad}, {"stick", l_stick}, {"type", l_type},
     {"text", l_text}, {"screen", l_screen}, {"wait", l_wait}, {"find", l_find},
     {"rule", l_rule}, {"rules", l_rules}, {"region", l_region}, {"key", l_key},
-    {"capslock", l_capslock}, {NULL, NULL},
+    {"capslock", l_capslock}, {"band", l_band}, {"flat", l_flat}, {"match", l_match},
+    {"learn", l_learn}, {"mark", l_mark}, {"changed", l_changed}, {"settle", l_settle},
+    {"power", l_power}, {"http", l_http}, {"typing", l_typing}, {"now", l_now},
+    {NULL, NULL},
   };
+  // type() is the keyboard here; keep Lua's own type() reachable as luatype().
+  lua_getglobal(L, "type");
+  lua_setglobal(L, "luatype");
   for (const luaL_Reg *r = api; r->name; r++) lua_register(L, r->name, r->func);
+  // require() finds shared code in scripts/lib (e.g. require "nav").
+  lua_getglobal(L, "package");
+  lua_pushfstring(L, "%s/lib/?.lua;%s/?.lua;", s->dir, s->dir);
+  lua_getfield(L, -2, "path");
+  lua_concat(L, 2);
+  lua_setfield(L, -2, "path");
+  lua_pop(L, 1);
   lua_sethook(L, stop_hook, LUA_MASKCOUNT, 1000);
 
   logf_(s, "> %s", strrchr(s->path, '/') ? strrchr(s->path, '/') + 1 : s->path);
@@ -532,10 +740,11 @@ void script_rescan(struct script *s)
   qsort(s->names, (size_t)s->count, sizeof s->names[0], cmp_names);
 }
 
-struct script *script_create(struct ocr *ocr, const char *dir)
+struct script *script_create(struct ocr *ocr, const char *dir, struct capture *cap)
 {
   struct script *s = calloc(1, sizeof *s);
   s->ocr = ocr;
+  s->cap = cap;
   snprintf(s->dir, sizeof s->dir, "%s", dir);
   pthread_mutex_init(&s->lock, NULL);
   s->input.hat = SV_HAT_CENTER;
@@ -564,6 +773,7 @@ int script_start(struct script *s, int index)
   s->nhl = 0;
   s->screen[0] = 0;
   s->textq_len = 0;
+  s->have_mark = 0;
   pthread_mutex_unlock(&s->lock);
   clear_input(s);
   atomic_store(&s->stop, 0);
@@ -577,6 +787,29 @@ int script_start(struct script *s, int index)
   pthread_detach(s->th);
   return 0;
 }
+
+int script_start_name(struct script *s, const char *name)
+{
+  script_stop(s);
+  script_rescan(s);
+  for (int i = 0; i < s->count; i++)
+    if (!strcmp(s->names[i], name)) return script_start(s, i);
+  logf_(s, "error: no script %s in %s", name, s->dir);
+  return -1;
+}
+
+void script_current(struct script *s, char *buf, size_t len)
+{
+  pthread_mutex_lock(&s->lock);
+  const char *slash = strrchr(s->path, '/');
+  snprintf(buf, len, "%s", slash ? slash + 1 : s->path);
+  pthread_mutex_unlock(&s->lock);
+}
+
+void script_note(struct script *s, const char *line) { logf_(s, "%s", line); }
+void script_set_power(struct script *s, struct power *p) { s->power = p; }
+void script_set_frames(struct script *s, struct frame_lib *lib) { s->frames = lib; }
+void script_set_typing(struct script *s, int typing) { atomic_store(&s->typing, typing); }
 
 void script_stop(struct script *s)
 {

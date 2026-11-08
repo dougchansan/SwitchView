@@ -277,7 +277,16 @@ end
 
 -- HOME menu, "Make a Program", or Direct mode -> Direct mode.  Dialogs are
 -- re-checked in the loop because "Tag Information" can follow the launch.
+local have_nav, nav = pcall(require, "nav")
+
 local function to_direct()
+  -- The shared navigator gets there from any screen (sleep, other games,
+  -- dialogs, a wedged program); the loop below is the old fallback.
+  if have_nav then
+    local ok, state = nav.go("smilebasic")
+    if ok then return state == "loaded" and "loaded" or "direct" end
+    return nil
+  end
   local deadline = os.time() + 30
   local launched = false
   while os.time() < deadline do

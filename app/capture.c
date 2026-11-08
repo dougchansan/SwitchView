@@ -126,14 +126,15 @@ static int video_open(struct capture *c, const struct capture_opts *o)
   c->fd = open(o->video_dev, O_RDWR | O_NONBLOCK);
   if (c->fd < 0) { perror(o->video_dev); return -1; }
 
+  unsigned want_fmt = o->format == SV_PIX_YUYV ? V4L2_PIX_FMT_YUYV : V4L2_PIX_FMT_NV12;
   struct v4l2_format fmt = {0};
   fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   fmt.fmt.pix.width = (unsigned)o->width;
   fmt.fmt.pix.height = (unsigned)o->height;
-  fmt.fmt.pix.pixelformat = o->fourcc;
+  fmt.fmt.pix.pixelformat = want_fmt;
   fmt.fmt.pix.field = V4L2_FIELD_NONE;
   if (xioctl(c->fd, VIDIOC_S_FMT, &fmt) < 0) { perror("VIDIOC_S_FMT"); return -1; }
-  if (fmt.fmt.pix.pixelformat != o->fourcc) {
+  if (fmt.fmt.pix.pixelformat != want_fmt) {
     fprintf(stderr, "video: device refused requested pixel format\n");
     return -1;
   }
@@ -285,6 +286,14 @@ int capture_muted(struct capture *c) { return atomic_load(&c->muted); }
 
 void capture_want_luma(struct capture *c) { atomic_store(&c->luma_wanted, 1); }
 
+unsigned capture_luma_seq(struct capture *c)
+{
+  pthread_mutex_lock(&c->luma_lock);
+  unsigned seq = c->luma_seq;
+  pthread_mutex_unlock(&c->luma_lock);
+  return seq;
+}
+
 unsigned capture_copy_luma(struct capture *c, uint8_t *dst)
 {
   pthread_mutex_lock(&c->luma_lock);
@@ -292,4 +301,14 @@ unsigned capture_copy_luma(struct capture *c, uint8_t *dst)
   if (seq) memcpy(dst, c->luma, (size_t)c->width * c->height);
   pthread_mutex_unlock(&c->luma_lock);
   return seq;
+}
+
+// V4L2 devices are just files; list the nodes that exist.
+void capture_list_devices(void)
+{
+  char path[32];
+  for (int i = 0; i < 32; i++) {
+    snprintf(path, sizeof path, "/dev/video%d", i);
+    if (access(path, R_OK | W_OK) == 0) fprintf(stderr, "video: /dev/video%d\n", i);
+  }
 }

@@ -16,6 +16,7 @@ struct ocr {
   struct capture *cap;
   pthread_t th;
   atomic_int running, enabled;
+  atomic_uint until_ms;  // ocr_request deadline
 
   pthread_mutex_t lock;  // guards region and result
   float rx, ry, rw, rh;
@@ -66,7 +67,10 @@ static void *ocr_thread(void *arg)
   static struct ocr_box boxes[OCR_MAX_BOXES];
 
   while (atomic_load(&o->running)) {
-    if (!atomic_load(&o->enabled)) { usleep(20000); continue; }
+    if (!atomic_load(&o->enabled) && (int32_t)(atomic_load(&o->until_ms) - SDL_GetTicks()) <= 0) {
+      usleep(20000);
+      continue;
+    }
 
     uint32_t started = SDL_GetTicks();
     atomic_store(&o->busy_since, started);
@@ -161,6 +165,8 @@ void ocr_destroy(struct ocr *o)
 }
 
 void ocr_set_enabled(struct ocr *o, int on) { atomic_store(&o->enabled, on); }
+void ocr_request(struct ocr *o, unsigned ms) { atomic_store(&o->until_ms, SDL_GetTicks() + ms); }
+const char *ocr_engine(void) { return "tesseract"; }
 
 void ocr_set_region(struct ocr *o, float x, float y, float w, float h)
 {

@@ -1,0 +1,24 @@
+#!/bin/sh
+# One-line client for SwitchView's local control API (127.0.0.1:39390).
+#   sv state                 sv goto smilebasic|seedsow|console
+#   sv type 'PRINT 7'        sv tap A [ms]        sv dpad down [ms]
+#   sv power toggle|boot|off|restart             sv learn LABEL   sv log
+API=${SV_API:-http://127.0.0.1:39390}
+cmd=${1:-state}; [ $# -gt 0 ] && shift
+case "$cmd" in
+  state) curl -s "$API/state" ;;
+  goto)  curl -s "$API/goto?target=$1&wait=1&timeout=${2:-300}" ;;
+  run)   curl -s "$API/run?script=$1&wait=1" ;;
+  stop)  curl -s "$API/stop" ;;
+  log)   curl -s "$API/log?n=${1:-40}" ;;
+  tap)   curl -s "$API/tap?btn=$1&ms=${2:-120}" ;;
+  dpad)  curl -s "$API/dpad?dir=$1&ms=${2:-100}" ;;
+  type)  printf '%s\n' "$*" | curl -s --data-binary @- "$API/type?wait=1" ;;
+  power) curl -s "$API/power?action=$1&wait=1" ;;
+  learn) curl -s "$API/learn?label=$1" ;;
+  forget) curl -s "$API/forget?label=$1" ;;
+  companion) curl -s "$API/companion?n=${1:-40}" ;;
+  frame) curl -s -o "${1:-frame.pgm}" "$API/frame.pgm" && echo "${1:-frame.pgm}" ;;
+  *) echo "usage: sv state|goto T|type TEXT|tap BTN|dpad DIR|power ACTION|learn L|log|frame [file]" >&2; exit 2 ;;
+esac
+echo

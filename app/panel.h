@@ -7,6 +7,8 @@
 #include "ocr.h"
 
 struct script;
+struct power;
+struct companion;
 
 // Design-space size the layout is authored in; scaled to the window.
 #define PANEL_DESIGN_W 1280
@@ -38,5 +40,9 @@ int panel_text_focused(struct panel *p);
 
 // Script panel (right half) drives this runner.
 void panel_set_script(struct panel *p, struct script *s);
+// Fingerbot power buttons (hidden when NULL).
+void panel_set_power(struct panel *p, struct power *pw);
+// Companion watcher shown in the log card's second tab (hidden when NULL).
+void panel_set_companion(struct panel *p, struct companion *c);
 
 #endif

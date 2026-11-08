@@ -1,6 +1,6 @@
 # SwitchView
 
-A low-latency command center for the Nintendo Switch 2 on Linux.
+A low-latency command center for the Nintendo Switch 2 on Linux and macOS.
 
 SwitchView shows the console's screen and sound from a capture card, and puts
 a clickable Pro Controller, a keyboard, a mouse and a Lua scripting panel right
@@ -22,9 +22,10 @@ app drives it over Wi-Fi.
 
 ## Features
 
-- **Fast capture.** Raw NV12/YUYV frames straight from V4L2, always the newest
-  frame, colour conversion on the GPU, no vsync by default. Audio is read from
-  ALSA in 1 ms periods with a bounded output queue (~20 ms max).
+- **Fast capture.** Raw NV12/YUYV frames straight from V4L2 (Linux) or
+  AVFoundation (macOS), always the newest frame, colour conversion on the GPU,
+  no vsync by default. Audio is pulled in short chunks (ALSA on Linux, CoreAudio
+  on macOS) with a bounded output queue (~20 ms max).
 - **Pro Controller panel.** Click to hold, right-click to latch. Every button
   has a keyboard shortcut (hover a button for a second to see it), and a gamepad
   plugged into the PC is forwarded 1:1.
@@ -41,6 +42,7 @@ app drives it over Wi-Fi.
 | Part | Notes |
 |---|---|
 | Linux PC | Tested on Ubuntu with an AMD GPU (OpenGL renderer via SDL2). |
+| macOS | macOS 14 or newer, Apple Silicon or Intel. Any UVC capture card. |
 | USB capture card | Developed with an Elgato 4K S; any V4L2/UVC device offering NV12 or YUYV should work. |
 | Raspberry Pi Pico 2 W | Plugs into a USB port on the Switch 2 dock. |
 
@@ -61,6 +63,19 @@ make run
 
 Your user needs access to the capture device (`/dev/video0`, usually the
 `video` group) and the capture card's ALSA device.
+
+### macOS
+
+```sh
+brew install sdl2 sdl2_ttf tesseract lua
+make            # builds app/switchview: AVFoundation video, CoreAudio audio
+make run
+```
+
+No driver or kernel extension is needed for a UVC capture card. The first run
+asks for camera and microphone access for the terminal you launch it from;
+denying it leaves the window black. `make deps` runs the matching install
+command for your platform.
 
 ### Firmware
 
@@ -88,11 +103,18 @@ keyboard + mouse, `0` controller only, `2` keyboard only.
 | Option | |
 |---|---|
 | `-H HOST` | Pico address (default `192.168.4.60`; must match `SV_PICO_IP`) |
-| `-d DEV` / `-a PCM` | Capture video device / ALSA capture device |
-| `-s WxH`, `-r FPS`, `-p nv12\|yuyv` | Capture mode |
+| `-d DEV` / `-a PCM` | Capture video device / audio input |
+| `-L` | List capture devices and audio inputs, then exit |
+| `-s WxH`, `-r FPS`, `-p nv12\|yuyv` | Capture mode (`yuyv` is Linux only) |
 | `-v` | Enable vsync (no tearing, up to one frame more latency) |
 | `-m SCALE` | Mouse sensitivity sent to the console |
 | `-f`, `-n`, `-V` | Start full screen, no audio, print stats |
+
+On Linux `-d` is a V4L2 node (`/dev/video0`) and `-a` an ALSA PCM
+(`hw:CARD=S,DEV=0`). On macOS `-d` is an index, part of the device name, or its
+unique ID — `-L` prints them — and `-a` is part of an audio input name. The
+macOS default picks the audio input that belongs to the capture card, so a USB
+card's HDMI sound is used without extra flags.
 
 | Key | Control |
 |---|---|
@@ -155,11 +177,87 @@ previous run (set `NS2_HOST` to override it); the NS2 program must already be
 saved in slot 0.  Run folders and the host log go to
 `$XDG_STATE_HOME/switchview/ns2`.
 
+## ESP32 + Flipper + Fingerbot rig (macOS)
+
+SwitchView also drives the ESP32-S2 / Flipper / Fingerbot rig directly:
+
+| Piece | How SwitchView talks to it |
+|---|---|
+| ESP32-S2, `pro-2` firmware (ns2-savekit `tools/esp32_pro`) | Pad over HTTP: `-H http://192.168.50.215`. Buttons and d-pad. The firmware has no analog sticks, so a firmly pushed left stick drives the d-pad. |
+| Flipper Zero (Bad KB, en-UK, USB into the console) | Keyboard: Bad KB jobs over the ESP32's raw RPC bridge (TCP :8080), the same protocol as `~/flipper2jb`, implemented in `app/flipper.c`. A line takes ~10–13 s. |
+| Fingerbot on the power button | `-B http://127.0.0.1:8080` (the `fingerbot.py serve` HTTP server). Panel buttons: Sleep/Wake, Boot, Restart, Power Off. Restart and Power Off need a second click. |
+
+Start it from Terminal (it has the camera permission the capture card needs):
+
+```sh
+cp rig.env.example rig.env      # board / fingerbot addresses
+open -a Terminal tools/switchview.command
+```
+
+### One-click navigation
+
+The buttons above the log (**Seedsow**, **SB Direct**, **HTTP Console**) run
+`scripts/goto_*.lua`. Each one works out where the console is and gets to the
+target, using `scripts/lib/nav.lua`, the harness state machine moved in-process.
+It handles a dark or sleeping console (HOME, then the fingerbot), the start
+screen, the account picker (first user, or `SV_USER_INDEX`), close-software
+dialogs, splash screens, other running games, TOPMENU, and a wedged RPC program
+(close and relaunch).
+
+| Target | Done when |
+|---|---|
+| `smilebasic` | SmileBASIC 4 (retail) Direct mode prompt |
+| `seedsow` | Seedsow Lullaby's save launcher menu is up |
+| `console` | Seedsow launcher, then **Y**: "http control channel ready" |
+
+Measured on the rig: already there 0.1 s, HOME to Direct mode 8 s, and a
+switch between Seedsow and SmileBASIC (closing the other) 15–17 s.
+
+Why it is fast: the frame is already in memory, OCR is Apple Vision run
+in-process (~50–100 ms per read; `SV_OCR_ACCURATE=1` for the slower model),
+and waits are tied to the picture. `mark()`, `changed()` and `settle()`
+compare 64×36 fingerprints instead of sleeping.
+
+### Companion log ("Seedsow log" tab)
+
+The log card has two tabs. **Script** is the running script's log; **Seedsow
+log** runs kalua-sow's `watch-pretty.py` on
+`/tmp/ns2-direct-attempts/attempt-1.log`, colours and all. That's the same view
+as `watch-pretty.command`: alias steps, canary hit/miss, margins, endpoint
+phases. It restarts itself if the watcher exits. `SV_COMPANION` runs any other
+command instead (e.g. `tail -n 50 -F file`), and `SV_COMPANION=none` turns it
+off. `tools/sv companion` prints the same lines.
+
+### Teaching screens
+
+`sv learn <state>` (or `learn("<state>")` in Lua) stores the current screen's
+fingerprint in `screens/`. From then on nav recognises it with no OCR at all.
+Use nav's state names (`seedsow`, `topmenu`, `home-row`, ...).
+
+### Control API (for scripts and AI agents)
+
+`http://127.0.0.1:39390` (loopback only; `-C 0` disables it), or `tools/sv`:
+
+```sh
+tools/sv state              # picture, learned-screen match, OCR text, link, power
+tools/sv goto smilebasic    # blocks until done, returns the log
+tools/sv type 'PRINT 7'     # keyboard (Flipper on the ESP32 rig)
+tools/sv tap A ; tools/sv dpad down
+tools/sv power restart
+tools/sv frame now.pgm      # current frame, 8-bit grey
+```
+
+New Lua functions: `band(y0,y1)` (OCR text in a horizontal band),
+`flat()`, `match()`, `learn(label)`, `mark()`, `changed(t)`, `settle(t)`,
+`power(action)`, `http(url[,body])`, `typing()`, `now()`, and
+`luatype()` (Lua's own `type`, since `type()` is the keyboard).
+`type()` now returns once the text has actually been typed.
+
 ## Repository layout
 
 | Path | |
 |---|---|
-| `app/` | SDL2 app: capture, panel UI, Pico link, OCR, Lua runner |
+| `app/` | SDL2 app: capture (`capture.c` V4L2/ALSA, `capture_macos.m` AVFoundation/CoreAudio), panel UI, Pico link, OCR, Lua runner |
 | `firmware/` | Pico 2 W firmware (TinyUSB composite device, lwIP UDP) |
 | `proto/switchview_proto.h` | Wire protocol shared by the app and the firmware |
 | `scripts/` | Lua scripts |
