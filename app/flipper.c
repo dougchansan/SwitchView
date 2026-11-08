@@ -16,11 +16,13 @@
 #include <unistd.h>
 
 #define REMOTE "/ext/badusb/switchview.txt"
+#define SETTINGS "/ext/badusb/.badkb.settings"
 #define SCRIPT_MAX 60000
 
 // Protobuf fields of PB_Main (flipperzero-protobuf flipper.proto).
 enum {
   F_ID = 1, F_STATUS = 2, F_HAS_NEXT = 3,
+  F_STORAGE_READ = 9, F_STORAGE_READ_REPLY = 10,
   F_STORAGE_WRITE = 11, F_APP_START = 16, F_APP_LOCK_STATUS = 17, F_APP_LOCK_REPLY = 18,
   F_GUI_INPUT = 23,
 };
@@ -67,8 +69,9 @@ static void pb_blob(struct pb *b, int field, const void *d, size_t n)
   pb_raw(b, d, n);
 }
 
-// Decoded top-level fields of one reply we care about.
-struct reply { uint64_t id, status, has_next; int lock; };
+// Decoded top-level fields of one reply we care about. data/datan: the
+// File.data bytes of a storage read reply (one chunk).
+struct reply { uint64_t id, status, has_next; int lock; uint8_t data[1024]; size_t datan; };
 
 static int pb_get_var(const uint8_t *d, size_t n, size_t *i, uint64_t *out)
 {
@@ -108,6 +111,30 @@ static int parse_reply(const uint8_t *d, size_t n, struct reply *r)
           if ((k2 & 7) != 0) break;
           if (pb_get_var(d + i, (size_t)v, &j, &val)) break;
           if ((k2 >> 3) == 1) r->lock = val != 0;
+        }
+      } else if (field == F_STORAGE_READ_REPLY) {
+        // ReadResponse { File file = 1 { ... bytes data = 4 } }
+        const uint8_t *rr = d + i;
+        size_t j = 0;
+        uint64_t k2, l2;
+        while (j < v && pb_get_var(rr, (size_t)v, &j, &k2) == 0 && (k2 & 7) == 2 &&
+               pb_get_var(rr, (size_t)v, &j, &l2) == 0 && l2 <= v - j) {
+          if ((k2 >> 3) == 1) {  // File: find data = 4
+            const uint8_t *f = rr + j;
+            size_t q = 0;
+            uint64_t k3, x;
+            while (q < l2 && pb_get_var(f, (size_t)l2, &q, &k3) == 0) {
+              if ((k3 & 7) == 0) { if (pb_get_var(f, (size_t)l2, &q, &x)) break; continue; }
+              if ((k3 & 7) != 2 || pb_get_var(f, (size_t)l2, &q, &x) || x > l2 - q) break;
+              if ((k3 >> 3) == 4) {
+                size_t take = x < sizeof r->data - r->datan ? (size_t)x : sizeof r->data - r->datan;
+                memcpy(r->data + r->datan, f + q, take);
+                r->datan += take;
+              }
+              q += (size_t)x;
+            }
+          }
+          j += (size_t)l2;
         }
       }
       i += (size_t)v;
@@ -273,6 +300,57 @@ static int app_locked(struct conn *c)
   return rp.lock;
 }
 
+// Reads a small file (<= 4 KB) into buf; returns its length, or -1.
+static long read_file(struct conn *c, const char *path, char *buf, size_t cap)
+{
+  struct pb rq = {0}, m = {0};
+  pb_blob(&rq, 1, path, strlen(path));
+  pb_int(&m, F_ID, ++c->id);
+  pb_blob(&m, F_STORAGE_READ, rq.p, rq.n);
+  int r = send_main(c, &m);
+  free(rq.p); free(m.p);
+  if (r) return fail(c, "bridge send failed");
+  size_t n = 0;
+  for (;;) {
+    struct reply rp;
+    if (recv_msg(c, &rp, 8000)) return fail(c, "no reply to the settings read");
+    if (rp.id != c->id) continue;
+    if (rp.status) return -1;  // e.g. no settings file yet
+    size_t take = rp.datan < cap - 1 - n ? rp.datan : cap - 1 - n;
+    memcpy(buf + n, rp.data, take);
+    n += take;
+    if (!rp.has_next) break;
+  }
+  buf[n] = 0;
+  return (long)n;
+}
+
+// The key script assumes the en-UK Bad KB layout (the console's layout).
+// Bad KB falls back to en-US when its settings file is rewritten (seen after a
+// Flipper reboot with a lost clock), and then '"' types as '@'. Point the
+// layout line back at SV_FLIPPER_LAYOUT (default en-UK; "keep" = leave it).
+static int ensure_layout(struct conn *c)
+{
+  const char *want = getenv("SV_FLIPPER_LAYOUT");
+  if (!want || !*want) want = "en-UK";
+  if (!strcmp(want, "keep")) return 0;
+  char cur[4096], line[160];
+  long n = read_file(c, SETTINGS, cur, sizeof cur);
+  if (n <= 0) return 0;  // no settings file: Bad KB uses its default; nothing to patch
+  snprintf(line, sizeof line, "layout: /ext/badusb/assets/layouts/%s.kl", want);
+  char *at = strstr(cur, "\nlayout:");
+  if (!at) return 0;
+  at++;
+  char *eol = strchr(at, '\n');
+  size_t ln = eol ? (size_t)(eol - at) : strlen(at);
+  if (ln == strlen(line) && !strncmp(at, line, ln)) return 0;  // already right
+  char out[4300];
+  int k = snprintf(out, sizeof out, "%.*s%s%s", (int)(at - cur), cur, line, eol ? eol : "\n");
+  if (k <= 0 || (size_t)k >= sizeof out) return 0;
+  fprintf(stderr, "flipper: Bad KB layout was '%.*s'; setting %s\n", (int)ln, at, want);
+  return upload(c, SETTINGS, (const uint8_t *)out, (size_t)k);
+}
+
 /* ---------------- script ---------------- */
 
 // en-UK: characters that need Shift (what flipper2jb's tested layout says).
@@ -362,6 +440,7 @@ long flipper_type(const char *host, int port, const char *text, size_t len, char
   long rc = -1;
   struct pb st = {0};
   if (app_locked(&c) == 1) { fail(&c, "an app is open on the Flipper; return it to the desktop"); goto out; }
+  if (ensure_layout(&c)) goto out;
   if (upload(&c, REMOTE, (const uint8_t *)s.p, s.n)) goto out;
   pb_blob(&st, 1, "Bad KB", 6);
   pb_blob(&st, 2, REMOTE, strlen(REMOTE));
@@ -370,7 +449,10 @@ long flipper_type(const char *host, int port, const char *text, size_t len, char
   if (input(&c, KEY_OK)) goto out;
   {
     // Wait the script's own duration plus parser/USB overhead, then leave.
-    long wait = s.ms + s.ms / 8 + env_int("SV_FLIPPER_CLOSE_MS", 350, 0, 30000);
+    // Bad KB starts typing ~1.5 s later than its DELAYs add up to (measured on
+    // the rig: 1000 ms of slack cut an 11-key line after 4 keys, 1600 ms
+    // finished it), so Back any sooner silently drops the line.
+    long wait = s.ms + s.ms / 8 + env_int("SV_FLIPPER_CLOSE_MS", 2200, 0, 30000);
     long end = mono_ms() + wait;
     while (mono_ms() < end) {
       usleep(150 * 1000);
