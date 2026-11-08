@@ -79,7 +79,7 @@ static const struct quick QUICK[] = {
   {"NS2 Run", "smilebasic_runner.lua", Q_NAV, 0, {1131, 64, 124, 34}},
   {"Sleep/Wake", "toggle", Q_POWER, 0, {735, 106, 100, 34}},
   {"Boot", "boot", Q_POWER, 0, {840, 106, 100, 34}},
-  {"Power Menu", "menu", Q_POWER, 0, {945, 106, 100, 34}},
+  {"Fast Restart", "fast_restart.lua", Q_NAV, 0, {945, 106, 100, 34}},
   {"Hard Restart", "restart", Q_POWER, 1, {1050, 106, 100, 34}},
   {"Power Off", "off", Q_POWER, 1, {1155, 106, 100, 34}},
 };
