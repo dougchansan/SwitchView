@@ -328,7 +328,8 @@ static int route(struct control *c, const char *method, const char *path, const 
   }
   if (!strcmp(path, "/stop")) { script_stop(c->ctx.script); bprintf(out, "{\"stopped\":true}\n"); return 200; }
   if (!strcmp(path, "/tap")) {
-    if (script_running(c->ctx.script)) { bprintf(out, "{\"error\":\"a script is running\"}\n"); return 409; }
+    // Adds to whatever the panel and a running script press (see main.c), like
+    // a second pair of hands on the same pad.
     uint32_t bits = qarg(query, "btn", v, sizeof v) ? parse_buttons(v) : 0;
     int ms = qarg(query, "ms", v, sizeof v) ? atoi(v) : 120;
     if (!bits) { bprintf(out, "{\"error\":\"btn?\"}\n"); return 400; }
@@ -341,7 +342,6 @@ static int route(struct control *c, const char *method, const char *path, const 
     return 200;
   }
   if (!strcmp(path, "/dpad")) {
-    if (script_running(c->ctx.script)) { bprintf(out, "{\"error\":\"a script is running\"}\n"); return 409; }
     int hat = qarg(query, "dir", v, sizeof v) ? parse_hat(v) : -1;
     int ms = qarg(query, "ms", v, sizeof v) ? atoi(v) : 100;
     if (hat < 0) { bprintf(out, "{\"error\":\"dir?\"}\n"); return 400; }

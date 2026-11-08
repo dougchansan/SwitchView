@@ -54,7 +54,8 @@ Raw HTTP equivalents: `GET /state`, `/goto?target=X&wait=1`, `POST /type?wait=1`
 4. **Never `power off` / `power restart` without the user's OK.** `boot` and `toggle` are fine
    for waking a dark console. If `picture` is false, try `$SV goto <target>` first: it wakes
    the console itself (HOME, then the fingerbot).
-5. `tap`/`dpad` are refused while a script (`goto`) is running; `$SV stop` ends it.
+5. `tap`/`dpad` work while a script (`goto`) runs and add to what it presses, like the on-screen pad;
+   pressing during a `goto` can derail it, so prefer waiting for it or `$SV stop` first.
 6. Don't run other tools that open the capture card, the ESP32 bridge (port 8080 on
    192.168.50.215) or the fingerbot while SwitchView is using them.
 
