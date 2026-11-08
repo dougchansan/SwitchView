@@ -34,6 +34,15 @@
 #define ESP_STATUS_MS 2000
 #define ESP_UP_MS 5000
 #define ESP_QUEUE 32
+// The console stops polling the pad's USB endpoint while it sleeps and does not
+// always pick it up again after waking: the board still answers HTTP, but
+// presses go nowhere. A console that is using the pad sends it output reports
+// all the time (~16/s, "rawSet" on /usb, even when idle); when that count stops
+// moving for this long the pad counts as stalled; the next press reboots the board (at most
+// once per ESP_RESET_COOLDOWN_MS) so it re-attaches like a replugged pad.
+#define ESP_STALL_MS 4000
+#define ESP_RESET_COOLDOWN_MS 30000
+#define ESP_REATTACH_MS 4000
 
 // Flipper Bad KB jobs.
 #define FLIP_IDLE_FLUSH_MS 500  // send a partial line after this pause (live typing)
@@ -81,6 +90,10 @@ struct link {
   int flip_busy;                 // a job is being sent / typed
   long flip_typing_until;
   long esp_last_ok;
+  long pad_stall_since;          // console stopped sending output reports at (0 = fine)
+  long pad_raw_set;              // last "rawSet" count read from /usb (-1 = none yet)
+  int pad_stalled;
+  long last_pad_reset;
 
   struct link_stats st;
 };
@@ -200,6 +213,22 @@ static void *worker(void *arg)
         have = 1;
       }
       pthread_mutex_unlock(&l->lock);
+      if (have && next && l->pad_stalled && mono_ms() - l->last_pad_reset >= ESP_RESET_COOLDOWN_MS &&
+          mono_ms() >= l->flip_typing_until) {
+        // Someone is pressing buttons, so the console is presumably awake but
+        // has dropped the pad: reboot the board so it re-attaches.
+        char url[300], resp[128];
+        fprintf(stderr, "link: pad stalled; rebooting the board so the console re-attaches it\n");
+        snprintf(url, sizeof url, "%s/reboot", l->pad_url);
+        http_get(url, resp, sizeof resp, 1500);
+        pthread_mutex_lock(&l->lock);
+        l->last_pad_reset = mono_ms();
+        l->pad_stalled = 0;
+        l->pad_stall_since = 0;
+        pthread_mutex_unlock(&l->lock);
+        usleep(ESP_REATTACH_MS * 1000);
+        sent = 0;
+      }
       if (have && next != sent) {
         // Let a press live long enough to be seen before changing it.
         if (sent && now - sent_ms < ESP_MIN_PRESS_MS) usleep((useconds_t)(ESP_MIN_PRESS_MS - (now - sent_ms)) * 1000);
@@ -219,6 +248,23 @@ static void *worker(void *arg)
           pthread_mutex_lock(&l->lock);
           l->esp_last_ok = mono_ms();
           l->st.rtt_ms = (float)(mono_ms() - t0);
+          pthread_mutex_unlock(&l->lock);
+        }
+        char usb[1024];
+        snprintf(url, sizeof url, "%s/usb", l->pad_url);
+        if (http_get(url, usb, sizeof usb, 1500) == 200 && strstr(usb, "\"mounted\":true")) {
+          const char *rs = strstr(usb, "\"rawSet\":");
+          long raw = rs ? atol(rs + 9) : -1;
+          long t = mono_ms();
+          pthread_mutex_lock(&l->lock);
+          int stuck = raw >= 0 && raw == l->pad_raw_set;
+          l->pad_raw_set = raw;
+          if (!stuck) l->pad_stall_since = 0, l->pad_stalled = 0;
+          else if (!l->pad_stall_since) l->pad_stall_since = t;
+          else if (t - l->pad_stall_since >= ESP_STALL_MS && !l->pad_stalled) {
+            l->pad_stalled = 1;
+            fprintf(stderr, "link: the console is not polling the pad (asleep, or lost it after waking)\n");
+          }
           pthread_mutex_unlock(&l->lock);
         }
         last_status = mono_ms();
@@ -312,6 +358,7 @@ struct link *link_open(const char *host, int port, const char *kb_url)
   l->dirty = 1;
   l->tokens = TEXT_BUCKET_MAX;
   l->st.leds = -1;
+  l->pad_raw_set = -1;
   pthread_mutex_init(&l->lock, NULL);
 
   if (!strncmp(host, "http://", 7)) {
@@ -487,7 +534,7 @@ void link_poll(struct link *l, uint32_t now_ms)
   int up;
   pthread_mutex_lock(&l->lock);
   if (l->pad == PAD_UDP) up = l->last_echo_ms && now_ms - l->last_echo_ms < UP_TIMEOUT_MS;
-  else up = l->esp_last_ok && mono_ms() - l->esp_last_ok < ESP_UP_MS;
+  else up = l->esp_last_ok && mono_ms() - l->esp_last_ok < ESP_UP_MS && !l->pad_stalled;
   unsigned q = l->kb == KB_FLIPPER ? (unsigned)l->ftext_len
                                    : (l->tq_head + sizeof l->textq - l->tq_tail) % sizeof l->textq;
   l->st.text_queued = q;

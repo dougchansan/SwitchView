@@ -73,9 +73,10 @@ static const SDL_Rect SCRIPT_LOG = {735, 150, 520, 256};
 enum { Q_NAV, Q_POWER };
 struct quick { const char *label, *arg; int kind, confirm; SDL_Rect r; };
 static const struct quick QUICK[] = {
-  {"Seedsow", "goto_seedsow.lua", Q_NAV, 0, {735, 64, 166, 34}},
-  {"SB Direct", "goto_smilebasic.lua", Q_NAV, 0, {911, 64, 166, 34}},
-  {"HTTP Console", "goto_console.lua", Q_NAV, 0, {1087, 64, 168, 34}},
+  {"Seedsow", "goto_seedsow.lua", Q_NAV, 0, {735, 64, 122, 34}},
+  {"SB Direct", "goto_smilebasic.lua", Q_NAV, 0, {867, 64, 122, 34}},
+  {"HTTP Console", "goto_console.lua", Q_NAV, 0, {999, 64, 122, 34}},
+  {"NS2 Run", "smilebasic_runner.lua", Q_NAV, 0, {1131, 64, 124, 34}},
   {"Sleep/Wake", "toggle", Q_POWER, 0, {735, 106, 122, 34}},
   {"Boot", "boot", Q_POWER, 0, {867, 106, 122, 34}},
   {"Restart", "restart", Q_POWER, 1, {999, 106, 122, 34}},
