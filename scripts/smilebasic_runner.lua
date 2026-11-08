@@ -498,5 +498,10 @@ while true do
     log("Host exited without a result - see " .. HOST_LOG)
     return
   end
+  -- The host does the work through 2/4..4/4 and may log nothing for minutes.
+  -- A fresh screen read is the panel spinner's liveness beat, so take one each
+  -- pass: the spinner keeps turning while the host is alive (checked above)
+  -- instead of freezing grey as if the run were stuck.
+  text()
   sleep(1)
 end
