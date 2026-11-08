@@ -161,6 +161,13 @@ struct panel {
   char log_pill[MAX_LOGS][14];       // status-pill prefix ("" = no pill)
   int nlogs;
   int log_tab;            // 0 script log, 1..nlogs = logs[log_tab-1]
+  int log_scroll[MAX_LOGS + 1];  // lines scrolled back from the live tail, per tab (0 = follow tail)
+  int mouse_x, mouse_y;          // last pointer position (for wheel-over-log hit test)
+
+  // Network round-trip readout: pad board (link) vs the Raspberry Pi video
+  // relay, so switching the Mac ethernet<->wifi shows the difference.
+  float pad_rtt_ms, pi_rtt_ms;
+  int pad_up, pi_up, streaming;
 
   // Log selection: drag to highlight rows, Cmd/Ctrl+C copies them. The rows are
   // snapshotted each frame during render so hit-testing and copy share geometry.
@@ -595,6 +602,7 @@ int panel_event(struct panel *p, const SDL_Event *e, const SDL_Rect *area)
   switch (e->type) {
   case SDL_MOUSEBUTTONDOWN: {
     int mx = e->button.x, my = e->button.y;
+    p->mouse_x = mx; p->mouse_y = my;
     // A left-click anywhere but inside the log box clears any text selection.
     if (e->button.button == SDL_BUTTON_LEFT && !in_log_box(p, mx, my)) {
       p->sel_a = p->sel_b = -1;
@@ -686,6 +694,7 @@ int panel_event(struct panel *p, const SDL_Event *e, const SDL_Rect *area)
     return 1;
   }
   case SDL_MOUSEMOTION: {
+    p->mouse_x = e->motion.x; p->mouse_y = e->motion.y;
     if (p->sel_dragging) {
       int row = log_row_at(p, e->motion.y);
       if (row >= 0) p->sel_b = row;
@@ -706,6 +715,19 @@ int panel_event(struct panel *p, const SDL_Event *e, const SDL_Rect *area)
         if (p->stick[i].dragging) { p->stick[i].dragging = 0; p->stick[i].x = p->stick[i].y = 0; }
     }
     return 0;
+  case SDL_MOUSEWHEEL: {
+    // Scroll the selected log tab back through its history. dy > 0 = wheel up =
+    // older lines; the upper bound is clamped against the live total in render,
+    // and scroll 0 keeps following the tail.
+    int dy = e->wheel.y;
+    if (e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) dy = -dy;
+    if (!dy || !in_log_box(p, p->mouse_x, p->mouse_y)) return 0;
+    int t = p->log_tab;
+    if (t < 0) t = 0; else if (t > MAX_LOGS) t = MAX_LOGS;
+    p->log_scroll[t] += dy;
+    if (p->log_scroll[t] < 0) p->log_scroll[t] = 0;
+    return 1;
+  }
   case SDL_TEXTINPUT:
     if (p->text_focus) { type_chars(p, e->text.text, 0); return 1; }
     return 0;
@@ -993,6 +1015,38 @@ static void draw_spinner(struct panel *p, float cx, float cy, float rad, int wor
   }
 }
 
+// Clamp the current tab's scroll-back against the live line count and return
+// the oldest-first index of the first visible row. scroll 0 shows the newest
+// `fit` lines (follows the tail); the max shows the oldest.
+static int log_first_visible(struct panel *p, int fit, int total)
+{
+  int maxs = total - fit;
+  if (maxs < 0) maxs = 0;
+  int *sc = &p->log_scroll[p->log_tab];
+  if (*sc > maxs) *sc = maxs;
+  if (*sc < 0) *sc = 0;
+  int lo = total - fit - *sc;
+  return lo < 0 ? 0 : lo;
+}
+
+// Thin scrollbar on the right edge of the log clip, shown only when scrolled
+// history exists. Thumb sits at the bottom when following the tail.
+static void draw_log_scrollbar(struct panel *p, const SDL_Rect *clip, int total, int fit, int lo)
+{
+  if (total <= fit) return;
+  int w = SS(p, 3); if (w < 2) w = 2;
+  int x = clip->x + clip->w - w - SS(p, 2);
+  int th = (int)((float)clip->h * fit / total);
+  int min_th = SS(p, 14); if (th < min_th) th = min_th;
+  if (th > clip->h) th = clip->h;
+  float fy = total > fit ? (float)lo / (total - fit) : 1.f;  // 0 oldest (top) .. 1 tail (bottom)
+  int ty = clip->y + (int)((clip->h - th) * fy);
+  SDL_SetRenderDrawBlendMode(p->ren, SDL_BLENDMODE_BLEND);
+  SDL_SetRenderDrawColor(p->ren, 0, 0, 0, 55);
+  SDL_Rect bar = {x, ty, w, th};
+  SDL_RenderFillRect(p->ren, &bar);
+}
+
 static void render_script_panel(struct panel *p)
 {
   SDL_Renderer *r = p->ren;
@@ -1120,7 +1174,10 @@ static void render_script_panel(struct panel *p)
     int mlh = TTF_FontLineSkip(p->font_mono_big);
     int mfit = (int)((lb.h - top - SS(p, 16)) / (mlh ? mlh : 13));
     if (mfit > COMP_LINES) mfit = COMP_LINES;
-    int n = companion_lines(comp, cl, mfit);
+    if (mfit < 1) mfit = 1;
+    int total = companion_lines(comp, cl, COMP_LINES);  // all buffered, oldest first
+    int lo = log_first_visible(p, mfit, total);         // first visible row
+    int n = total - lo; if (n > mfit) n = mfit;
     static const SDL_Color PAL[] = {
       {45, 45, 45, 255}, {150, 150, 150, 255}, {205, 50, 50, 255}, {30, 150, 60, 255},
       {190, 130, 0, 255}, {50, 100, 220, 255}, {160, 60, 180, 255}, {0, 140, 160, 255}};
@@ -1132,18 +1189,19 @@ static void render_script_panel(struct panel *p)
     p->disp_x = (int)(lb.x + SS(p, 12));
     p->disp_y0 = (int)(lb.y + top + SS(p, 8) + mlh / 2);
     p->disp_n = n;
-    for (int i = 0; i < n && i < COMP_LINES; i++)
-      snprintf(p->disp[i], COMP_COLS, "%s", cl[i].text);
+    for (int i = 0; i < n; i++)
+      snprintf(p->disp[i], COMP_COLS, "%s", cl[lo + i].text);
     draw_log_selection(p);
-    if (!n) draw_text(p, "waiting for the watcher...", 4, PAL[1], (int)(lb.x + SS(p, 12)),
+    if (!total) draw_text(p, "waiting for the watcher...", 4, PAL[1], (int)(lb.x + SS(p, 12)),
                       (int)(lb.y + top + SS(p, 8) + mlh / 2), 1);
     for (int i = 0; i < n; i++) {
+      struct comp_line *L = &cl[lo + i];
       int x = (int)(lb.x + SS(p, 12)), y = (int)(lb.y + top + SS(p, 8) + mlh * i + mlh / 2);
-      for (int s = 0; s < cl[i].nseg; s++) {
-        struct comp_seg *sg = &cl[i].seg[s];
+      for (int s = 0; s < L->nseg; s++) {
+        struct comp_seg *sg = &L->seg[s];
         if (!sg->len) continue;
         char part[COMP_COLS];
-        snprintf(part, sizeof part, "%.*s", sg->len, cl[i].text + sg->start);
+        snprintf(part, sizeof part, "%.*s", sg->len, L->text + sg->start);
         int w = 0;
         TTF_SizeUTF8(p->font_mono_big, part, &w, NULL);
         SDL_Color col = PAL[sg->color < 8 ? sg->color : 0];
@@ -1151,6 +1209,7 @@ static void render_script_panel(struct panel *p)
         x += w;
       }
     }
+    draw_log_scrollbar(p, &clip, total, mfit, lo);
     SDL_RenderSetClipRect(r, NULL);
     return;
   }
@@ -1159,7 +1218,10 @@ static void render_script_panel(struct panel *p)
   int lh = TTF_FontLineSkip(lf);
   int fit = (int)((lb.h - top - SS(p, 20)) / (lh ? lh : 28));
   if (fit > SCRIPT_LOG_LINES) fit = SCRIPT_LOG_LINES;
-  int nl = script_log(p->script, lines, fit);
+  if (fit < 1) fit = 1;
+  int total = script_log(p->script, lines, SCRIPT_LOG_LINES);  // all buffered, oldest first
+  int lo = log_first_visible(p, fit, total);                   // first visible row
+  int nl = total - lo; if (nl > fit) nl = fit;
   // Keep long lines inside the card instead of spilling over the panel.
   SDL_RenderSetClipRect(r, &clip);
   lb.y += top;
@@ -1171,14 +1233,15 @@ static void render_script_panel(struct panel *p)
   p->disp_y0 = (int)(lb.y + SS(p, 10) + lh / 2);
   p->disp_n = nl;
   for (int i = 0; i < nl && i < COMP_LINES; i++)
-    snprintf(p->disp[i], COMP_COLS, "%s", lines[i]);
+    snprintf(p->disp[i], COMP_COLS, "%s", lines[lo + i]);
   draw_log_selection(p);
   for (int i = 0; i < nl; i++) {
-    const char *t = lines[i];
+    const char *t = lines[lo + i];
     SDL_Color c = !strncmp(t, "error", 5) ? (SDL_Color){200, 60, 60, 255}
                 : t[0] == '>' ? C_ACCENT : C_TEXT;
     draw_text(p, t, p->font_log ? 3 : 1, c, (int)(lb.x + SS(p, 14)), (int)(lb.y + SS(p, 10) + lh * i + lh / 2), 1);
   }
+  draw_log_scrollbar(p, &clip, total, fit, lo);
   SDL_RenderSetClipRect(r, NULL);
 }
 
