@@ -479,9 +479,11 @@ struct panel *panel_create(SDL_Renderer *ren)
     static const char *const mono_paths[] = {
         "/System/Library/Fonts/Menlo.ttc", "/System/Library/Fonts/Monaco.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"};
+    // 13 px fits a 100-column NS2/Seedsow table row inside the 520-design-px
+    // log card at the usual panel scale; 22 px (the old size) overflowed it.
     for (size_t i = 0; i < sizeof mono_paths / sizeof mono_paths[0] && !p->font_mono; i++) {
       p->font_mono = TTF_OpenFont(mono_paths[i], 11);
-      if (p->font_mono) p->font_mono_big = TTF_OpenFont(mono_paths[i], 22);
+      if (p->font_mono) p->font_mono_big = TTF_OpenFont(mono_paths[i], 13);
     }
     if (!p->font_mono) p->font_mono = p->font_small;
     if (!p->font_mono_big) p->font_mono_big = p->font_mono;
