@@ -158,7 +158,7 @@ static void *run(void *arg)
     // (or the user) to pick Restart. The exact hold that shows the menu (vs a
     // short press that sleeps) is console-specific; tune with SV_MENU_S.
     const char *e = getenv("SV_MENU_S");
-    double menu_s = e && atof(e) > 0 ? atof(e) : 3.0;
+    double menu_s = e && atof(e) > 0 ? atof(e) : 4.0;
     travel(p);
     say(p, "menu press %.1f s", menu_s);
     if (press(p, menu_s)) say(p, "power menu should be up (pick Restart)");
