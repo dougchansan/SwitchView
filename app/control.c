@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
@@ -468,6 +469,16 @@ static void serve_one(struct control *c, int fd)
   free(req);
 }
 
+// Mark an fd close-on-exec so children we spawn (the NS2 host via the Lua
+// runner, companion tails) don't inherit it. Without this the host inherited
+// our listening socket and kept 127.0.0.1:<port> bound after we exited, so the
+// next SwitchView could not bind its control API until that orphan died.
+static void set_cloexec(int fd)
+{
+  int f = fcntl(fd, F_GETFD);
+  if (f >= 0) fcntl(fd, F_SETFD, f | FD_CLOEXEC);
+}
+
 static void *server(void *arg)
 {
   struct control *c = arg;
@@ -476,6 +487,7 @@ static void *server(void *arg)
     if (poll(&p, 1, 200) <= 0) continue;
     int fd = accept(c->fd, NULL, NULL);
     if (fd < 0) continue;
+    set_cloexec(fd);  // a spawn mid-request must not inherit the client socket
     serve_one(c, fd);
     close(fd);
   }
@@ -486,6 +498,7 @@ struct control *control_start(int port, const struct control_ctx *ctx)
 {
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) return NULL;
+  set_cloexec(fd);  // the NS2 host we spawn must not inherit the listening port
   int one = 1;
   setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
   struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons((uint16_t)port)};
