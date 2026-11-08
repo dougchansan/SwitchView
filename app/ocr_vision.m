@@ -104,6 +104,16 @@ static void *ocr_thread(void *arg)
       usleep(3000);
     }
     if (!seq || seq == last_seq) { atomic_store(&o->busy, 0); continue; }
+    // The size can change after start-up (the network source begins with a
+    // placeholder and switches to the stream's size), so check every pass.
+    unsigned cw = capture_width(o->cap), ch = capture_height(o->cap);
+    if (cw != w || ch != h) {
+      uint8_t *nf = realloc(frame, (size_t)cw * ch);
+      if (!nf) { atomic_store(&o->busy, 0); usleep(20000); continue; }
+      frame = nf;
+      w = cw;
+      h = ch;
+    }
     seq = capture_copy_luma(o->cap, frame);
     last_seq = seq;
 

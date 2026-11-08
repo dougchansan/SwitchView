@@ -79,7 +79,17 @@ static void *ocr_thread(void *arg)
     // Wait (briefly) for the main loop to hand over the next frame.
     unsigned seq = 0;
     for (int i = 0; i < 100 && atomic_load(&o->running); i++) {
-      seq = capture_copy_luma(o->cap, frame);
+      // The size can change after start-up (the network source begins with a
+    // placeholder and switches to the stream's size), so check every pass.
+    unsigned cw = capture_width(o->cap), ch = capture_height(o->cap);
+    if (cw != w || ch != h) {
+      uint8_t *nf = realloc(frame, (size_t)cw * ch);
+      if (!nf) { atomic_store(&o->busy, 0); usleep(20000); continue; }
+      frame = nf;
+      w = cw;
+      h = ch;
+    }
+    seq = capture_copy_luma(o->cap, frame);
       if (seq && seq != last_seq) break;
       usleep(5000);
     }
