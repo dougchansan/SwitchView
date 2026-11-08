@@ -48,6 +48,8 @@ double capture_audio_queued_ms(struct capture *c);
 // number, 0 if none yet.
 void capture_want_luma(struct capture *c);
 unsigned capture_copy_luma(struct capture *c, uint8_t *dst);
+// Sequence number of the latest snapshot, without copying it.
+unsigned capture_luma_seq(struct capture *c);
 
 // Muting keeps capture running (so unmute is instant) but drops the audio.
 void capture_set_muted(struct capture *c, int muted);

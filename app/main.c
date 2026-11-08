@@ -9,9 +9,13 @@
 #include <unistd.h>
 
 #include "capture.h"
+#include "companion.h"
+#include "control.h"
+#include "frame.h"
 #include "link.h"
 #include "ocr.h"
 #include "panel.h"
+#include "power.h"
 #include "script.h"
 #include "switchview_proto.h"
 
@@ -28,10 +32,15 @@ static void usage(const char *argv0)
           "  -r FPS     frame rate (default 60)\n"
           "  -p FMT     pixel format: nv12 | yuyv (default nv12; macOS: nv12 only)\n"
           "  -l MS      max audio queue in ms before dropping (default 20)\n"
-          "  -H HOST    Pico address (default 192.168.4.60); 'none' disables the link\n"
+          "  -H HOST    pad board: IP = Pico/UDP (default 192.168.4.60), http://IP = ESP32 pro-2\n"
+          "             firmware over HTTP; 'none' disables the link   (env SV_HOST)\n"
           "  -P PORT    Pico UDP port (default %d)\n"
           "  -S HOST[:PORT]  watch the Raspberry Pi Wi-Fi stream instead of a local card\n"
           "             (e.g. raspberrypi.local; default port %d)\n"
+          "  -K URL     keyboard: http://IP = Flipper Bad KB via that ESP32 bridge, 'none' = off\n"
+          "             (default: Flipper on an http pad, the Pico keyboard otherwise)   (env SV_KB)\n"
+          "  -B URL     fingerbot server (default http://127.0.0.1:8080), 'none' = off   (env SV_FINGERBOT)\n"
+          "  -C PORT    local control API on 127.0.0.1 (default 39390), 0 = off\n"
           "  -v         enable vsync (no tearing, up to +1 frame latency)\n"
           "  -f         start fullscreen (video only)\n"
           "  -n         no audio\n"
@@ -46,17 +55,37 @@ static void usage(const char *argv0)
           argv0, SV_PORT, SV_STREAM_PORT);
 }
 
+// -S / SV_STREAM: HOST, HOST:PORT, or [IPv6]:PORT of the Raspberry Pi relay.
+static void parse_stream(const char *arg, struct capture_opts *co)
+{
+  static char sh[256];
+  snprintf(sh, sizeof sh, "%s", arg[0] == '[' ? arg + 1 : arg);
+  char *port_sep = arg[0] == '[' ? strstr(sh, "]") : strchr(sh, ':');
+  if (arg[0] != '[' && port_sep && strchr(port_sep + 1, ':')) port_sep = NULL;  // bare IPv6
+  if (port_sep) {
+    if (port_sep[0] == ']') *port_sep++ = 0;
+    if (port_sep[0] == ':') co->stream_port = atoi(port_sep + 1);
+    *port_sep = 0;
+  }
+  co->stream_host = sh;
+}
+
 int main(int argc, char **argv)
 {
   struct capture_opts co = {.video_dev = "/dev/video0", .audio_dev = "hw:CARD=S,DEV=0",
                             .width = 1920, .height = 1080, .fps = 60,
                             .format = SV_PIX_NV12, .audio_max_ms = 20,
                             .stream_port = SV_STREAM_PORT};
-  const char *host = "192.168.4.60";
+  if (getenv("SV_VIDEO") && *getenv("SV_VIDEO")) co.video_dev = getenv("SV_VIDEO");  // e.g. "USB3.0 Video"
+  if (getenv("SV_STREAM") && *getenv("SV_STREAM")) parse_stream(getenv("SV_STREAM"), &co);
+  const char *host = getenv("SV_HOST") ? getenv("SV_HOST") : "192.168.4.60";
+  const char *kb_url = getenv("SV_KB");
+  const char *finger = getenv("SV_FINGERBOT") ? getenv("SV_FINGERBOT") : "http://127.0.0.1:8080";
+  int control_port = 39390;
   int port = SV_PORT, vsync = 0, fullscreen = 0, verbose = 0;
   float mouse_scale = 1.0f;
   int c;
-  while ((c = getopt(argc, argv, "d:a:s:r:p:l:H:P:S:m:vfnVLh")) != -1) {
+  while ((c = getopt(argc, argv, "d:a:s:r:p:l:H:P:S:K:B:C:m:vfnVLh")) != -1) {
     switch (c) {
     case 'd': co.video_dev = optarg; break;
     case 'a': co.audio_dev = optarg; break;
@@ -65,21 +94,11 @@ int main(int argc, char **argv)
     case 'p': co.format = !strcmp(optarg, "yuyv") ? SV_PIX_YUYV : SV_PIX_NV12; break;
     case 'l': co.audio_max_ms = atoi(optarg); break;
     case 'H': host = optarg; break;
-    case 'S': {
-      // HOST, HOST:PORT, or [IPv6]:PORT.
-      static char sh[256];
-      snprintf(sh, sizeof sh, "%s", optarg[0] == '[' ? optarg + 1 : optarg);
-      char *port_sep = optarg[0] == '[' ? strstr(sh, "]") : strchr(sh, ':');
-      if (optarg[0] != '[' && port_sep && strchr(port_sep + 1, ':')) port_sep = NULL;  // bare IPv6
-      if (port_sep) {
-        if (port_sep[0] == ']') { *port_sep++ = 0; }
-        if (port_sep[0] == ':') co.stream_port = atoi(port_sep + 1);
-        *port_sep = 0;
-      }
-      co.stream_host = sh;
-      break;
-    }
+    case 'S': parse_stream(optarg, &co); break;
     case 'P': port = atoi(optarg); break;
+    case 'K': kb_url = optarg; break;
+    case 'B': finger = optarg; break;
+    case 'C': control_port = atoi(optarg); break;
     case 'm': mouse_scale = (float)atof(optarg); break;
     case 'v': vsync = 1; break;
     case 'f': fullscreen = 1; break;
@@ -127,7 +146,7 @@ int main(int argc, char **argv)
 
   struct capture *cap = capture_open(&co, ren);
   if (!cap) return 1;
-  struct link *link = strcmp(host, "none") ? link_open(host, port) : NULL;
+  struct link *link = strcmp(host, "none") ? link_open(host, port, kb_url) : NULL;
   struct panel *panel = panel_create(ren);
 
   // Scripts live in SwitchView/scripts, next to app/ where the binary is.
@@ -138,9 +157,42 @@ int main(int argc, char **argv)
     SDL_free(base);
   }
   struct ocr *ocr = ocr_create(cap);
-  struct script *script = script_create(ocr, script_dir);
+  struct script *script = script_create(ocr, script_dir, cap);
   panel_set_script(panel, script);
   fprintf(stderr, "link: %s\n", link ? link_describe(link) : "disabled");
+
+  // Learned screens (fingerprints) live next to scripts/, in screens/.
+  char screens_dir[1100];
+  snprintf(screens_dir, sizeof screens_dir, "%s/../screens", script_dir);
+  struct frame_lib *screens = frame_lib_open(screens_dir);
+  script_set_frames(script, screens);
+  fprintf(stderr, "screens: %d learned in %s; ocr: %s\n", frame_lib_count(screens), screens_dir, ocr_engine());
+
+  struct power *power = NULL;
+  if (strcmp(finger, "none")) {
+    power = power_create(finger, cap, (power_log_fn)script_note, script);
+    script_set_power(script, power);
+    panel_set_power(panel, power);
+    fprintf(stderr, "fingerbot: %s\n", finger);
+  }
+  // Companion log for the panel's second tab: kalua-sow's pretty watcher on
+  // the Seedsow attempt log, unless SV_COMPANION names another command.
+  struct companion *companion = NULL;
+  {
+    char def[1024];
+    const char *home = getenv("HOME") ? getenv("HOME") : ".";
+    snprintf(def, sizeof def,
+             "f=/tmp/ns2-direct-attempts/attempt-1.log; mkdir -p /tmp/ns2-direct-attempts; touch \"$f\"; "
+             "exec python3 '%s/kalua-sow/watch-pretty.py' \"$f\"", home);
+    const char *cmd = getenv("SV_COMPANION") && *getenv("SV_COMPANION") ? getenv("SV_COMPANION") : def;
+    if (strcmp(cmd, "none")) {
+      companion = companion_start(cmd, 100);
+      panel_set_companion(panel, companion);
+    }
+  }
+  struct control_ctx cctx = {.script = script, .ocr = ocr, .cap = cap, .frames = screens, .power = power,
+                            .companion = companion};
+  struct control *control = control_port > 0 ? control_start(control_port, &cctx) : NULL;
 
   unsigned frames = 0;
   double fps = 0;
@@ -209,8 +261,9 @@ int main(int argc, char **argv)
         capture_set_muted(cap, !capture_muted(cap));
         need_redraw = 1;
       } else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT &&
-                 e.button.y < video_area.h && link) {
-        // Click on the video: hand the mouse to the Switch.
+                 e.button.y < video_area.h && link && link_has_mouse(link)) {
+        // Click on the video: hand the mouse to the Switch (only boards with
+        // a USB mouse; on the ESP32 rig the cursor stays yours).
         mouse_captured = 1;
         SDL_SetRelativeMouseMode(SDL_TRUE);
         need_redraw = 1;
@@ -243,15 +296,27 @@ int main(int argc, char **argv)
         if (ss.rx || ss.ry) { st.rx = ss.rx; st.ry = ss.ry; }
         if (ss.hat != SV_HAT_CENTER) st.hat = ss.hat;
       }
+      int api_active = 0;
+      if (control) {
+        struct link_state cs;
+        control_get_input(control, &cs, &api_active);
+        if (api_active) {
+          st.buttons |= cs.buttons;
+          if (cs.hat != SV_HAT_CENTER) st.hat = cs.hat;
+        }
+      }
       link_set_state(link, &st);
-      char text[1024];
+      char text[4096];
       if (panel_take_text(panel, text, sizeof text)) link_send_text(link, text);
       if (script_take_text(script, text, sizeof text)) link_send_text(link, text);
+      if (control && control_take_text(control, text, sizeof text)) link_send_text(link, text);
       link_poll(link, now);
       struct link_stats ls;
       link_get_stats(link, &ls);
       panel_set_link(panel, ls.up);
       script_set_leds(script, ls.up ? ls.leds : -1);
+      script_set_typing(script, ls.typing);
+      if (control) control_set_link(control, &ls, link_describe(link));
     }
 
     // Panel highlights follow held keys/gamepad even without events.
@@ -305,8 +370,12 @@ int main(int argc, char **argv)
     }
   }
 
+  control_stop(control);
+  companion_stop(companion);
   script_destroy(script);
+  power_destroy(power);
   ocr_destroy(ocr);
+  frame_lib_close(screens);
   link_close(link);
   panel_destroy(panel);
   capture_close(cap);

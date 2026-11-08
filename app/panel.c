@@ -1,6 +1,8 @@
 #include "panel.h"
 #include "switchview_proto.h"
 #include "script.h"
+#include "power.h"
+#include "companion.h"
 
 #include <SDL2/SDL_ttf.h>
 #include <ctype.h>
@@ -63,11 +65,31 @@ static const SDL_Rect ENTERBTN = {568, 370, 127, 36};
 static const SDL_Rect SCRIPT_REFRESH = {735, 20, 36, 36};
 static const SDL_Rect SCRIPT_NAME = {781, 20, 336, 36};
 static const SDL_Rect SCRIPT_RUN = {1129, 20, 126, 36};
-static const SDL_Rect SCRIPT_LOG = {735, 76, 520, 330};
+static const SDL_Rect SCRIPT_LOG = {735, 150, 520, 256};
+
+// One-click actions above the log: navigation targets (each runs
+// scripts/goto_<x>.lua, which works out where the console is and gets to the
+// target) and fingerbot power. Destructive power actions need a second click.
+enum { Q_NAV, Q_POWER };
+struct quick { const char *label, *arg; int kind, confirm; SDL_Rect r; };
+static const struct quick QUICK[] = {
+  {"Seedsow", "goto_seedsow.lua", Q_NAV, 0, {735, 64, 166, 34}},
+  {"SB Direct", "goto_smilebasic.lua", Q_NAV, 0, {911, 64, 166, 34}},
+  {"HTTP Console", "goto_console.lua", Q_NAV, 0, {1087, 64, 168, 34}},
+  {"Sleep/Wake", "toggle", Q_POWER, 0, {735, 106, 122, 34}},
+  {"Boot", "boot", Q_POWER, 0, {867, 106, 122, 34}},
+  {"Restart", "restart", Q_POWER, 1, {999, 106, 122, 34}},
+  {"Power Off", "off", Q_POWER, 1, {1131, 106, 124, 34}},
+};
+#define NQUICK (sizeof QUICK / sizeof QUICK[0])
+#define CONFIRM_MS 3000
+// Tabs on the log card: the script log and the companion watcher.
+static const SDL_Rect TAB_SCRIPT = {747, 156, 96, 22};
+static const SDL_Rect TAB_COMP = {849, 156, 120, 22};
 
 // Hover/focus targets for the animated selection ring.
 enum { HOV_NONE = -1, HOV_STICK0 = 100, HOV_STICK1, HOV_TEXT, HOV_LIVE, HOV_ENTER,
-       HOV_SCRIPT_NAME, HOV_SCRIPT_RUN, HOV_SCRIPT_REFRESH };
+       HOV_SCRIPT_NAME, HOV_SCRIPT_RUN, HOV_SCRIPT_REFRESH, HOV_QUICK0 = 200 };
 
 /* ---------------- theme (Switch 2 light) ---------------- */
 
@@ -97,8 +119,8 @@ struct stick_state { float x, y; int dragging, latched; };
 
 struct panel {
   SDL_Renderer *ren;
-  TTF_Font *font_big, *font_small, *font_sym;
-  struct textcache cache[160];
+  TTF_Font *font_big, *font_small, *font_sym, *font_mono;
+  struct textcache cache[512];
   int ncache;
 
   uint32_t mouse_bits, latch_bits, key_bits;
@@ -123,6 +145,12 @@ struct panel {
   int script_sel;
   int refresh_down;       // refresh button held
   uint32_t refresh_ms;    // last refresh click (keeps a quick tap visibly blue)
+  struct power *power;
+  int armed;              // QUICK index waiting for a confirming click, -1 none
+  uint32_t armed_ms;
+  char power_action[16];  // last power action started from the panel
+  struct companion *companion;
+  int log_tab;            // 0 script log, 1 companion log
 };
 
 /* ---------------- text ---------------- */
@@ -172,10 +200,10 @@ static Uint32 first_cp(const char *s)
 
 static SDL_Texture *text_tex(struct panel *p, const char *s, int big, SDL_Color c, int *w, int *h)
 {
-  TTF_Font *f = big ? p->font_big : p->font_small;
+  TTF_Font *f = big == 2 ? p->font_mono : big ? p->font_big : p->font_small;
   if (!f || !*s) return NULL;
   // Symbols (arrows, minus, home) live in DejaVu, not Noto.
-  if (p->font_sym && !TTF_GlyphIsProvided32(f, first_cp(s))) f = p->font_sym;
+  if (big != 2 && p->font_sym && !TTF_GlyphIsProvided32(f, first_cp(s))) f = p->font_sym;
   for (int i = 0; i < p->ncache; i++) {
     struct textcache *t = &p->cache[i];
     if (t->size == big && !strcmp(t->str, s) && t->color.r == c.r && t->color.g == c.g && t->color.b == c.b) {
@@ -356,6 +384,8 @@ static int hover_at(struct panel *p, int mx, int my)
   if (in_rect(&SCRIPT_NAME, p, mx, my)) return HOV_SCRIPT_NAME;
   if (in_rect(&SCRIPT_RUN, p, mx, my)) return HOV_SCRIPT_RUN;
   if (in_rect(&SCRIPT_REFRESH, p, mx, my)) return HOV_SCRIPT_REFRESH;
+  for (unsigned i = 0; i < NQUICK; i++)
+    if (in_rect(&QUICK[i].r, p, mx, my) && (QUICK[i].kind != Q_POWER || p->power)) return HOV_QUICK0 + (int)i;
   int w = widget_at(p, mx, my);
   if (w >= 0) return w;
   int s = stick_at(p, mx, my);
@@ -378,6 +408,7 @@ static SDL_FRect hover_rect(struct panel *p, int h, float *rad)
   else if (h == HOV_ENTER) rc = design_rect(p, &ENTERBTN);
   else if (h == HOV_SCRIPT_NAME) rc = design_rect(p, &SCRIPT_NAME);
   else if (h == HOV_SCRIPT_RUN) rc = design_rect(p, &SCRIPT_RUN);
+  else if (h >= HOV_QUICK0 && h < HOV_QUICK0 + (int)NQUICK) rc = design_rect(p, &QUICK[h - HOV_QUICK0].r);
   return rc;
 }
 
@@ -399,6 +430,7 @@ struct panel *panel_create(SDL_Renderer *ren)
   p->ren = ren;
   p->mouse_widget = -1;
   p->hover = HOV_NONE;
+  p->armed = -1;
   if (TTF_Init() == 0) {
     p->font_big = open_font(21, 1);
     p->font_small = open_font(12, 0);
@@ -409,6 +441,12 @@ struct panel *panel_create(SDL_Renderer *ren)
     for (size_t i = 0; i < sizeof sym_paths / sizeof sym_paths[0] && !p->font_sym; i++)
       p->font_sym = TTF_OpenFont(sym_paths[i], 19);
     if (p->font_sym) TTF_SetFontHinting(p->font_sym, TTF_HINTING_LIGHT);
+    static const char *const mono_paths[] = {
+        "/System/Library/Fonts/Menlo.ttc", "/System/Library/Fonts/Monaco.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"};
+    for (size_t i = 0; i < sizeof mono_paths / sizeof mono_paths[0] && !p->font_mono; i++)
+      p->font_mono = TTF_OpenFont(mono_paths[i], 11);
+    if (!p->font_mono) p->font_mono = p->font_small;
     if (!p->font_big) fprintf(stderr, "panel: no TTF font found; labels disabled\n");
   }
   for (int i = 0; i < SDL_NumJoysticks(); i++) {
@@ -428,6 +466,7 @@ void panel_destroy(struct panel *p)
   if (p->font_big) TTF_CloseFont(p->font_big);
   if (p->font_small) TTF_CloseFont(p->font_small);
   if (p->font_sym) TTF_CloseFont(p->font_sym);
+  if (p->font_mono && p->font_mono != p->font_small) TTF_CloseFont(p->font_mono);
   TTF_Quit();
   free(p);
 }
@@ -508,6 +547,29 @@ int panel_event(struct panel *p, const SDL_Event *e, const SDL_Rect *area)
       if (!script_running(p->script)) {
         script_rescan(p->script);
         if (p->script_sel >= script_count(p->script)) p->script_sel = 0;
+      }
+      return 1;
+    }
+    if (p->companion && in_rect(&TAB_SCRIPT, p, mx, my)) { p->log_tab = 0; return 1; }
+    if (p->companion && in_rect(&TAB_COMP, p, mx, my)) { p->log_tab = 1; return 1; }
+    for (unsigned i = 0; i < NQUICK; i++) {
+      const struct quick *q = &QUICK[i];
+      if (!in_rect(&q->r, p, mx, my)) continue;
+      if (q->kind == Q_NAV && p->script) {
+        char cur[160];
+        script_current(p->script, cur, sizeof cur);
+        // Clicking the running target stops it; any other target takes over.
+        if (script_running(p->script) && !strcmp(cur, q->arg)) script_stop(p->script);
+        else script_start_name(p->script, q->arg);
+      } else if (q->kind == Q_POWER && p->power) {
+        if (q->confirm && !(p->armed == (int)i && SDL_GetTicks() - p->armed_ms < CONFIRM_MS)) {
+          p->armed = (int)i;
+          p->armed_ms = SDL_GetTicks();
+        } else {
+          p->armed = -1;
+          if (power_start(p->power, q->arg) == 0) snprintf(p->power_action, sizeof p->power_action, "%s", q->arg);
+          else if (p->script) script_note(p->script, "power: busy (wait for the current action)");
+        }
       }
       return 1;
     }
@@ -664,6 +726,8 @@ int panel_take_text(struct panel *p, char *buf, size_t len)
 
 int panel_text_focused(struct panel *p) { return p->text_focus; }
 void panel_set_script(struct panel *p, struct script *s) { p->script = s; }
+void panel_set_power(struct panel *p, struct power *pw) { p->power = pw; }
+void panel_set_companion(struct panel *p, struct companion *c) { p->companion = c; }
 void panel_set_link(struct panel *p, int up) { p->link_up = up; }
 
 /* ---------------- render ---------------- */
@@ -818,18 +882,85 @@ static void render_script_panel(struct panel *p)
   rrect(r, rb, rb.h / 2, running ? (SDL_Color){215, 70, 70, 255} : C_ACCENT, -1);
   draw_text(p, running ? "Stop" : "Run", 1, C_WHITE, (int)(rb.x + rb.w / 2), (int)(rb.y + rb.h / 2), 0);
 
+  // Quick actions
+  {
+    char cur[160] = "";
+    script_current(p->script, cur, sizeof cur);
+    int pbusy = p->power && power_busy(p->power);
+    uint32_t now = SDL_GetTicks();
+    if (p->armed >= 0 && now - p->armed_ms >= CONFIRM_MS) p->armed = -1;
+    for (unsigned i = 0; i < NQUICK; i++) {
+      const struct quick *q = &QUICK[i];
+      int enabled = q->kind == Q_NAV || p->power;
+      int active = q->kind == Q_NAV ? (running && !strcmp(cur, q->arg))
+                                    : (pbusy && !strcmp(p->power_action, q->arg));
+      int armed = p->armed == (int)i;
+      SDL_FRect qb = design_rect(p, &q->r);
+      SDL_Color fill = armed ? (SDL_Color){215, 70, 70, 255} : active ? C_BTN_DOWN : C_BTN;
+      SDL_Color fg = !enabled ? (SDL_Color){170, 170, 170, 255} : (armed || active) ? C_WHITE : C_TEXT;
+      shadow(r, qb, qb.h / 2, 1.0f * p->scale);
+      rrect(r, qb, qb.h / 2, fill, -1);
+      const char *label = armed ? "Confirm?" : q->label;
+      draw_text(p, label, 0, fg, (int)(qb.x + qb.w / 2), (int)(qb.y + qb.h / 2), 0);
+    }
+  }
+
   // Log
   SDL_FRect lb = design_rect(p, &SCRIPT_LOG);
   shadow(r, lb, 9 * p->scale, 1.0f * p->scale);
   rrect(r, lb, 9 * p->scale, C_BTN, -1);
+  float top = 0;
+  if (p->companion) {
+    // Tab pills: Script | Seedsow log
+    const SDL_Rect *tabs[2] = {&TAB_SCRIPT, &TAB_COMP};
+    const char *names[2] = {"Script", "Seedsow log"};
+    for (int t = 0; t < 2; t++) {
+      SDL_FRect tb2 = design_rect(p, tabs[t]);
+      int on = p->log_tab == t;
+      rrect(r, tb2, tb2.h / 2, on ? C_ACCENT : C_WELL, -1);
+      draw_text(p, names[t], 0, on ? C_WHITE : C_TEXT, (int)(tb2.x + tb2.w / 2), (int)(tb2.y + tb2.h / 2), 0);
+    }
+    top = SS(p, 30);
+  }
+  SDL_Rect clip = {(int)lb.x + 2, (int)(lb.y + top) + 2, (int)lb.w - 4, (int)(lb.h - top) - 4};
+  if (p->companion && p->log_tab == 1) {
+    // Companion watcher: monospace, the watcher's own colours, newest at the bottom.
+    static struct comp_line cl[COMP_LINES];
+    int mlh = TTF_FontLineSkip(p->font_mono);
+    int mfit = (int)((lb.h - top - SS(p, 16)) / (mlh ? mlh : 13));
+    if (mfit > COMP_LINES) mfit = COMP_LINES;
+    int n = companion_lines(p->companion, cl, mfit);
+    static const SDL_Color PAL[] = {
+      {45, 45, 45, 255}, {150, 150, 150, 255}, {205, 50, 50, 255}, {30, 150, 60, 255},
+      {190, 130, 0, 255}, {50, 100, 220, 255}, {160, 60, 180, 255}, {0, 140, 160, 255}};
+    SDL_RenderSetClipRect(r, &clip);
+    if (!n) draw_text(p, "waiting for the watcher...", 2, PAL[1], (int)(lb.x + SS(p, 12)),
+                      (int)(lb.y + top + SS(p, 8) + mlh / 2), 1);
+    for (int i = 0; i < n; i++) {
+      int x = (int)(lb.x + SS(p, 12)), y = (int)(lb.y + top + SS(p, 8) + mlh * i + mlh / 2);
+      for (int s = 0; s < cl[i].nseg; s++) {
+        struct comp_seg *sg = &cl[i].seg[s];
+        if (!sg->len) continue;
+        char part[COMP_COLS];
+        snprintf(part, sizeof part, "%.*s", sg->len, cl[i].text + sg->start);
+        int w = 0;
+        TTF_SizeUTF8(p->font_mono, part, &w, NULL);
+        SDL_Color col = PAL[sg->color < 8 ? sg->color : 0];
+        draw_text(p, part, 2, col, x, y, 1);
+        x += w;
+      }
+    }
+    SDL_RenderSetClipRect(r, NULL);
+    return;
+  }
   static char lines[SCRIPT_LOG_LINES][SCRIPT_LOG_COLS];
   int lh = TTF_FontLineSkip(p->font_small ? p->font_small : p->font_big);
-  int fit = (int)((lb.h - SS(p, 20)) / (lh ? lh : 14));
+  int fit = (int)((lb.h - top - SS(p, 20)) / (lh ? lh : 14));
   if (fit > SCRIPT_LOG_LINES) fit = SCRIPT_LOG_LINES;
   int nl = script_log(p->script, lines, fit);
   // Keep long lines inside the card instead of spilling over the panel.
-  SDL_Rect clip = {(int)lb.x + 2, (int)lb.y + 2, (int)lb.w - 4, (int)lb.h - 4};
   SDL_RenderSetClipRect(r, &clip);
+  lb.y += top;
   for (int i = 0; i < nl; i++) {
     const char *t = lines[i];
     SDL_Color c = !strncmp(t, "error", 5) ? (SDL_Color){200, 60, 60, 255}
@@ -865,6 +996,14 @@ void panel_render(struct panel *p, const SDL_Rect *area, const char *status)
     float rad = w->shape == SH_CIRCLE ? rc.w / 2 : 9 * p->scale;
     SDL_Color fill = on ? C_BTN_DOWN : latched ? C_BTN_LATCH : C_BTN;
     button(p, w, rc, rad, fill, on ? C_WHITE : C_TEXT);
+    // Keyboard shortcut, always visible: a small grey key just outside the
+    // button's lower-right edge.
+    if (w->key && *w->key) {
+      SDL_Color kc = {140, 140, 140, 255};
+      float kx = rc.x + rc.w + 3 * p->scale, ky = rc.y + rc.h - 5 * p->scale;
+      if (w->shape == SH_RECT && rc.w > 100 * p->scale) { kx = rc.x + rc.w - 12 * p->scale; ky = rc.y + rc.h / 2; kc = on ? C_WHITE : kc; }
+      draw_text(p, w->key, 0, kc, (int)kx, (int)ky, w->shape == SH_RECT && rc.w > 100 * p->scale ? 2 : 1);
+    }
   }
 
   // Sticks
@@ -879,6 +1018,8 @@ void panel_render(struct panel *p, const SDL_Rect *area, const char *status)
     SDL_Color kc = p->stick[i].latched ? C_BTN_LATCH : (x || y) ? C_BTN_DOWN : C_BTN;
     shadow(r, knob, kr, 1.2f * p->scale);
     rrect(r, knob, kr, kc, -1);
+    draw_text(p, i == 0 ? "WASD" : "Arrows", 0, (SDL_Color){140, 140, 140, 255},
+              cx, (int)(rc.y + rc.h + 9 * p->scale), 0);
   }
 
   // Text entry

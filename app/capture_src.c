@@ -15,5 +15,6 @@ int capture_has_audio(struct capture *c) { return c->ops->has_audio(c); }
 double capture_audio_queued_ms(struct capture *c) { return c->ops->audio_queued_ms(c); }
 void capture_want_luma(struct capture *c) { c->ops->want_luma(c); }
 unsigned capture_copy_luma(struct capture *c, uint8_t *dst) { return c->ops->copy_luma(c, dst); }
+unsigned capture_luma_seq(struct capture *c) { return c->ops->luma_seq(c); }
 void capture_set_muted(struct capture *c, int muted) { c->ops->set_muted(c, muted); }
 int capture_muted(struct capture *c) { return c->ops->muted(c); }

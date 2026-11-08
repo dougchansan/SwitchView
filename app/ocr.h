@@ -1,5 +1,5 @@
-// Screen OCR: a worker thread that reads the newest capture frame with
-// Tesseract while enabled. Results are lower-case with whitespace collapsed.
+// Screen OCR: a worker thread that reads the newest capture frame while
+// enabled (Apple Vision in-process on macOS, Tesseract on Linux). Results are lower-case with whitespace collapsed.
 #ifndef SV_OCR_H
 #define SV_OCR_H
 
@@ -22,6 +22,11 @@ void ocr_destroy(struct ocr *o);
 
 // Reading only runs while enabled (a script is running), to save CPU.
 void ocr_set_enabled(struct ocr *o, int on);
+// Keep reading for the next ms milliseconds even when not enabled (for
+// one-off reads from the control API).
+void ocr_request(struct ocr *o, unsigned ms);
+// Which engine reads the screen ("vision" on macOS, "tesseract" elsewhere).
+const char *ocr_engine(void);
 
 // Restrict reading to a region in 0..1 frame coordinates; w or h <= 0 = full frame.
 void ocr_set_region(struct ocr *o, float x, float y, float w, float h);

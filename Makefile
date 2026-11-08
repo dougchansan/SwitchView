@@ -10,17 +10,19 @@ UNAME_S := $(shell uname -s)
 FFMPEG_PKGS = libavformat libavcodec libavutil libswresample
 CAPTURE_OBJS = app/capture_src.o app/capture_net.o
 APP = app/switchview
+COMMON = app/http.o app/frame.o app/power.o app/control.o app/flipper.o app/companion.o
 
 ifeq ($(UNAME_S),Darwin)
   # Video comes from AVFoundation, audio from SDL's CoreAudio backend.
-  PKGS = sdl2 SDL2_ttf tesseract lua5.4 $(FFMPEG_PKGS)
-  OBJS = app/main.o $(CAPTURE_OBJS) app/capture_macos.o app/panel.o app/link.o app/ocr.o app/script.o
+  # OCR is Apple Vision in-process (app/ocr_vision.m); no Tesseract needed.
+  PKGS = sdl2 SDL2_ttf lua5.4 $(FFMPEG_PKGS)
+  OBJS = app/main.o $(CAPTURE_OBJS) app/capture_macos.o app/panel.o app/link.o app/ocr_vision.o app/script.o $(COMMON)
   LIBS = $(shell pkg-config --libs $(PKGS)) -framework AVFoundation -framework CoreMedia \
-         -framework CoreVideo -framework Foundation -lpthread
+         -framework CoreVideo -framework Foundation -framework Vision -framework CoreGraphics -lpthread
   PLATFORM_CFLAGS = -mmacosx-version-min=14.0
 else
   PKGS = sdl2 SDL2_ttf alsa tesseract lua5.4 $(FFMPEG_PKGS)
-  OBJS = app/main.o $(CAPTURE_OBJS) app/capture.o app/panel.o app/link.o app/ocr.o app/script.o
+  OBJS = app/main.o $(CAPTURE_OBJS) app/capture.o app/panel.o app/link.o app/ocr.o app/script.o $(COMMON)
   LIBS = $(shell pkg-config --libs $(PKGS)) -lpthread -lm
   PLATFORM_CFLAGS =
 endif
@@ -44,7 +46,7 @@ run: $(APP)
 
 deps:
 ifeq ($(UNAME_S),Darwin)
-	brew install sdl2 sdl2_ttf tesseract lua ffmpeg
+	brew install sdl2 sdl2_ttf lua ffmpeg
 else
 	sudo apt install build-essential pkg-config libsdl2-dev libsdl2-ttf-dev \
 	                 libasound2-dev libtesseract-dev tesseract-ocr-eng liblua5.4-dev \
@@ -64,7 +66,7 @@ flash: firmware
 	cp firmware/build/pico_pro_controller.uf2 "$$vol/" && echo "flashed to $$vol"
 
 clean:
-	rm -f $(OBJS) $(APP)
+	rm -f app/*.o $(APP)
 	rm -rf firmware/build
 
 .PHONY: all run deps firmware flash clean

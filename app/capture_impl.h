@@ -16,6 +16,7 @@ struct capture_ops {
   double (*audio_queued_ms)(struct capture *);
   void (*want_luma)(struct capture *);
   unsigned (*copy_luma)(struct capture *, uint8_t *);
+  unsigned (*luma_seq)(struct capture *);
   void (*set_muted)(struct capture *, int);
   int (*muted)(struct capture *);
 };
@@ -43,11 +44,12 @@ struct capture *net_capture_open(const struct capture_opts *o, SDL_Renderer *ren
   static void PFX##_op_want_luma(struct capture *c) { PFX##_want_luma((T *)c); }          \
   static unsigned PFX##_op_copy_luma(struct capture *c, uint8_t *d)                       \
   { return PFX##_copy_luma((T *)c, d); }                                                  \
+  static unsigned PFX##_op_luma_seq(struct capture *c) { return PFX##_luma_seq((T *)c); }   \
   static void PFX##_op_set_muted(struct capture *c, int m) { PFX##_set_muted((T *)c, m); } \
   static int PFX##_op_muted(struct capture *c) { return PFX##_muted((T *)c); }            \
   static const struct capture_ops PFX##_ops = {                                           \
       PFX##_op_close,     PFX##_op_poll,      PFX##_op_texture,         PFX##_op_width,   \
       PFX##_op_height,    PFX##_op_has_audio, PFX##_op_audio_queued_ms, PFX##_op_want_luma, \
-      PFX##_op_copy_luma, PFX##_op_set_muted, PFX##_op_muted}
+      PFX##_op_copy_luma, PFX##_op_luma_seq, PFX##_op_set_muted, PFX##_op_muted}
 
 #endif

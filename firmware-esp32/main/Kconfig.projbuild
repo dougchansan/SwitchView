@@ -1,0 +1,29 @@
+menu "SwitchView (ESP32-S2)"
+
+    config SV_WIFI_SSID
+        string "Wi-Fi SSID"
+        default "myssid"
+        help
+            Network the PC running SwitchView is on.
+
+    config SV_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default ""
+        help
+            WPA2 passphrase. Stored in sdkconfig, which is git-ignored.
+
+    config SV_STATIC_IP
+        string "Static IPv4 address"
+        default "192.168.4.60"
+        help
+            Fixed address: the app targets it with -H and DHCP would move it.
+
+    config SV_NETMASK
+        string "Netmask"
+        default "255.255.252.0"
+
+    config SV_GATEWAY
+        string "Gateway"
+        default "192.168.4.1"
+
+endmenu

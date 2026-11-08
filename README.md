@@ -68,7 +68,7 @@ Your user needs access to the capture device (`/dev/video0`, usually the
 ### macOS
 
 ```sh
-brew install sdl2 sdl2_ttf tesseract lua ffmpeg
+brew install sdl2 sdl2_ttf lua ffmpeg
 make            # builds app/switchview: AVFoundation video, CoreAudio audio
 make run
 ```
@@ -105,6 +105,8 @@ after a change). The service log shows what was picked. On the computer:
 ```sh
 ./app/switchview -S raspberrypi.local     # or the Pi's IP address
 ```
+
+or set `SV_STREAM=raspberrypi.local` in `rig.env` for `tools/switchview.command`.
 
 - The app says hello to the Pi every half second and the stream comes back on
   the same socket, so the Pi needs no address for the computer and no inbound
@@ -223,6 +225,82 @@ again if the run bails out.  The console-facing address is reused from the
 previous run (set `NS2_HOST` to override it); the NS2 program must already be
 saved in slot 0.  Run folders and the host log go to
 `$XDG_STATE_HOME/switchview/ns2`.
+
+## ESP32 + Flipper + Fingerbot rig (macOS)
+
+SwitchView also drives the ESP32-S2 / Flipper / Fingerbot rig directly:
+
+| Piece | How SwitchView talks to it |
+|---|---|
+| ESP32-S2, `pro-2` firmware (ns2-savekit `tools/esp32_pro`) | Pad over HTTP: `-H http://192.168.50.215`. Buttons and d-pad. The firmware has no analog sticks, so a firmly pushed left stick drives the d-pad. |
+| Flipper Zero (Bad KB, en-UK, USB into the console) | Keyboard: Bad KB jobs over the ESP32's raw RPC bridge (TCP :8080), the same protocol as `~/flipper2jb`, implemented in `app/flipper.c`. A line takes ~10–13 s. |
+| Fingerbot on the power button | `-B http://127.0.0.1:8080` (the `fingerbot.py serve` HTTP server). Panel buttons: Sleep/Wake, Boot, Restart, Power Off. Restart and Power Off need a second click. |
+
+Start it from Terminal (it has the camera permission the capture card needs):
+
+```sh
+cp rig.env.example rig.env      # board / fingerbot addresses
+open -a Terminal tools/switchview.command
+```
+
+### One-click navigation
+
+The buttons above the log (**Seedsow**, **SB Direct**, **HTTP Console**) run
+`scripts/goto_*.lua`. Each one works out where the console is and gets to the
+target, using `scripts/lib/nav.lua`, the harness state machine moved in-process.
+It handles a dark or sleeping console (HOME, then the fingerbot), the start
+screen, the account picker (first user, or `SV_USER_INDEX`), close-software
+dialogs, splash screens, other running games, TOPMENU, and a wedged RPC program
+(close and relaunch).
+
+| Target | Done when |
+|---|---|
+| `smilebasic` | SmileBASIC 4 (retail) Direct mode prompt |
+| `seedsow` | Seedsow Lullaby's save launcher menu is up |
+| `console` | Seedsow launcher, then **Y**: "http control channel ready" |
+
+Measured on the rig: already there 0.1 s, HOME to Direct mode 8 s, and a
+switch between Seedsow and SmileBASIC (closing the other) 15–17 s.
+
+Why it is fast: the frame is already in memory, OCR is Apple Vision run
+in-process (~50–100 ms per read; `SV_OCR_ACCURATE=1` for the slower model),
+and waits are tied to the picture. `mark()`, `changed()` and `settle()`
+compare 64×36 fingerprints instead of sleeping.
+
+### Companion log ("Seedsow log" tab)
+
+The log card has two tabs. **Script** is the running script's log; **Seedsow
+log** runs kalua-sow's `watch-pretty.py` on
+`/tmp/ns2-direct-attempts/attempt-1.log`, colours and all. That's the same view
+as `watch-pretty.command`: alias steps, canary hit/miss, margins, endpoint
+phases. It restarts itself if the watcher exits. `SV_COMPANION` runs any other
+command instead (e.g. `tail -n 50 -F file`), and `SV_COMPANION=none` turns it
+off. `tools/sv companion` prints the same lines.
+
+### Teaching screens
+
+`sv learn <state>` (or `learn("<state>")` in Lua) stores the current screen's
+fingerprint in `screens/`. From then on nav recognises it with no OCR at all.
+Use nav's state names (`seedsow`, `topmenu`, `home-row`, ...).
+
+### Control API (for scripts and AI agents)
+
+`http://127.0.0.1:39390` (loopback only; `-C 0` disables it), or `tools/sv`:
+
+```sh
+tools/sv state              # picture, learned-screen match, OCR text, link, power
+tools/sv goto smilebasic    # blocks until done, returns the log
+tools/sv type 'PRINT 7'     # keyboard (Flipper on the ESP32 rig)
+tools/sv tap A ; tools/sv dpad down
+tools/sv power restart
+tools/sv frame now.pgm      # current frame, 8-bit grey
+```
+
+New Lua functions: `band(y0,y1)` (OCR text in a horizontal band),
+`flat()`, `match()`, `learn(label)`, `mark()`, `changed(t)`, `settle(t)`,
+`power(action)`, `http(url[,body])`, `typing()`, `now()`, and
+`luatype()` (Lua's own `type`, since `type()` is the keyboard).
+`type()` now returns once the text has actually been typed.
 
 ## Repository layout
 

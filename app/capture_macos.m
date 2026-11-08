@@ -85,18 +85,30 @@ struct lcap {
 
 /* ---------------- devices ---------------- */
 
+// An iPhone/iPad (Continuity Camera, Desk View) shows up as an "external"
+// camera whenever it is nearby; it is never the capture card.
+static int is_phone(AVCaptureDevice *d)
+{
+  if (@available(macOS 14.0, *))
+    if ([d.deviceType isEqualToString:AVCaptureDeviceTypeContinuityCamera]) return 1;
+  const char *n = d.localizedName.UTF8String ?: "";
+  return strcasestr(n, "iphone") || strcasestr(n, "ipad") || strcasestr(n, "desk view");
+}
+
+// Capture cards only. Set SV_ALLOW_ANY_CAMERA=1 to smoke-test with a webcam.
 static NSArray *video_devices(void)
 {
   AVCaptureDeviceDiscoverySession *ds = [AVCaptureDeviceDiscoverySession
       discoverySessionWithDeviceTypes:@[ AVCaptureDeviceTypeExternal ]
                             mediaType:AVMediaTypeVideo
                              position:AVCaptureDevicePositionUnspecified];
-  NSArray *devs = ds.devices;
-  // No capture card attached: fall back to the default camera so the app can
-  // still be smoke-tested without one.
-  if (devs.count == 0) {
+  NSMutableArray *devs = [NSMutableArray array];
+  for (AVCaptureDevice *d in ds.devices)
+    if (!is_phone(d)) [devs addObject:d];
+  const char *any = getenv("SV_ALLOW_ANY_CAMERA");
+  if (devs.count == 0 && any && atoi(any) > 0) {
     AVCaptureDevice *d = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
-    devs = d ? @[ d ] : @[];
+    if (d) [devs addObject:d];
   }
   return devs;
 }
@@ -107,7 +119,7 @@ static AVCaptureDevice *pick_device(const char *want)
 {
   NSArray *devs = video_devices();
   if (devs.count == 0) {
-    fprintf(stderr, "video: no capture devices found (is the card plugged in?)\n");
+    fprintf(stderr, "video: no capture card found (is it plugged in? phones are ignored)\n");
     return nil;
   }
   int idx = -1;
@@ -131,9 +143,11 @@ static AVCaptureDevice *pick_device(const char *want)
     fprintf(stderr, "video: no device matches '%s' (use -L to list)\n", want);
     return nil;
   }
-  // Prefer an external device, which is what a capture card is.
-  for (AVCaptureDevice *d in devs)
-    if ([d.deviceType isEqualToString:AVCaptureDeviceTypeExternal]) return d;
+  // Prefer something that names itself like a capture card.
+  static const char *const hints[] = {"usb3.0 video", "elgato", "cam link", "capture", "hdmi", "uvc"};
+  for (size_t h = 0; h < sizeof hints / sizeof hints[0]; h++)
+    for (AVCaptureDevice *d in devs)
+      if (strcasestr(d.localizedName.UTF8String ?: "", hints[h])) return d;
   return devs[0];
 }
 
@@ -537,6 +551,14 @@ static unsigned lcap_copy_luma(struct lcap *c, uint8_t *dst)
   pthread_mutex_lock(&c->luma_lock);
   unsigned seq = c->luma_seq;
   if (seq) memcpy(dst, c->luma, (size_t)c->width * c->height);
+  pthread_mutex_unlock(&c->luma_lock);
+  return seq;
+}
+
+static unsigned lcap_luma_seq(struct lcap *c)
+{
+  pthread_mutex_lock(&c->luma_lock);
+  unsigned seq = c->luma_seq;
   pthread_mutex_unlock(&c->luma_lock);
   return seq;
 }

@@ -308,6 +308,14 @@ void capture_list_devices(void)
   }
 }
 
+static unsigned lcap_luma_seq(struct lcap *c)
+{
+  pthread_mutex_lock(&c->luma_lock);
+  unsigned seq = c->luma_seq;
+  pthread_mutex_unlock(&c->luma_lock);
+  return seq;
+}
+
 CAPTURE_DEFINE_OPS(struct lcap, lcap);
 
 struct capture *local_capture_open(const struct capture_opts *o, SDL_Renderer *ren)
