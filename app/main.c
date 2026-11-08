@@ -142,7 +142,13 @@ int main(int argc, char **argv)
   }
   SDL_RendererInfo ri;
   SDL_GetRendererInfo(ren, &ri);
-  fprintf(stderr, "render: %s, vsync %s\n", ri.name, vsync ? "on" : "off");
+  {
+    int rw, rh, pw, ph;
+    SDL_GetRendererOutputSize(ren, &rw, &rh);
+    SDL_GetWindowSize(win, &pw, &ph);
+    fprintf(stderr, "render: %s, vsync %s, %dx%d px for a %dx%d pt window (mouse scale %.1f)\n", ri.name,
+            vsync ? "on" : "off", rw, rh, pw, ph, pw ? (float)rw / pw : 1.f);
+  }
 
   struct capture *cap = capture_open(&co, ren);
   if (!cap) return 1;
@@ -215,8 +221,23 @@ int main(int argc, char **argv)
     float mute_d = 40.f * ww / 960.f, mute_m = 14.f * ww / 960.f;
     SDL_FRect mute_rc = {mute_m, mute_m, mute_d, mute_d};
 
+    // Layout is in renderer pixels; mouse events come in window points. On a
+    // HiDPI (Retina) display those differ by 2x, so scale clicks and motion
+    // into pixels or every click lands at half its position. Relative motion
+    // (xrel/yrel, sent to the console) stays as it is.
+    int pw, ph;
+    SDL_GetWindowSize(win, &pw, &ph);
+    float msx = pw > 0 ? (float)ww / pw : 1.f, msy = ph > 0 ? (float)wh / ph : 1.f;
+
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
+      if (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP) {
+        e.button.x = (Sint32)(e.button.x * msx);
+        e.button.y = (Sint32)(e.button.y * msy);
+      } else if (e.type == SDL_MOUSEMOTION) {
+        e.motion.x = (Sint32)(e.motion.x * msx);
+        e.motion.y = (Sint32)(e.motion.y * msy);
+      }
       if (e.type == SDL_QUIT) atomic_store(&running, 0);
       else if (e.type == SDL_KEYDOWN && (e.key.keysym.mod & KMOD_CTRL) && e.key.keysym.sym == SDLK_q)
         atomic_store(&running, 0);
