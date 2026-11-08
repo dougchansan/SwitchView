@@ -46,6 +46,9 @@ enum {
 #define SV_KEY_DOWN 0x13
 #define SV_KEY_LEFT 0x14
 #define SV_KEY_RIGHT 0x15
+// Flipper keyboard only: a 250 ms pause inside the Bad KB job (repeat for longer),
+// so several commands can go out as one job. Other keyboards ignore it.
+#define SV_KEY_PAUSE 0x16
 
 // SV_PKT_PING echo: the firmware fills text[0] with the host's keyboard LED
 // byte (bit 1 = Caps Lock) and text[1] = 1 once the host has sent one.

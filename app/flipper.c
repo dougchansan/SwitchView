@@ -411,6 +411,7 @@ static size_t build(struct script *s, const char *text, size_t len)
     case SV_KEY_DOWN: key(s, "DOWN", 0, ms); break;
     case SV_KEY_LEFT: key(s, "LEFT", 0, ms); break;
     case SV_KEY_RIGHT: key(s, "RIGHT", 0, ms); break;
+    case SV_KEY_PAUSE: sadd(s, "DELAY 250\n"); s->ms += 250; break;
     default:
       if (c > 32 && c < 127) key(s, one, needs_shift(c), ms);
       break;  // anything else is not typeable on the tested layout: skipped

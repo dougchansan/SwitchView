@@ -406,42 +406,64 @@ if state == "loaded" then
   return
 end
 
-enter('LOAD "TXT:NS2"')
-if expect("load the file", 8) then
-  tap("A")
-  sleep(1.5)
-end
-if not at_prompt(20) then
-  give_up("LOAD failed - not back in Direct mode")
-  return
-end
-log("NS2 loaded")
+-- LOAD -> RUN -> REMOVE -> V=START go out as ONE Bad KB job: every separate
+-- job costs ~5 s (upload, Bad KB start, lead-in, close) plus a screen wait.
+-- The only gaps are in-script pauses (SV_KEY_PAUSE = 250 ms each): after LOAD,
+-- and after RUN while the bootstrap runs (keys typed then are dropped).
+local PAUSE = string.char(0x16)
+local function pause(ms) return string.rep(PAUSE, math.max(1, math.floor(ms / 250 + 0.5))) end
+local LOAD_MS = tonumber(os.getenv("SV_NS2_LOAD_MS") or "") or 750
+local RUN_MS = tonumber(os.getenv("SV_NS2_RUN_MS") or "") or 2000
 
-enter("RUN")
-if not expect("dist boot ready", 25) then
-  give_up("No DIST BOOT READY - is NS2 the current program?")
-  return
-end
-log("Bootstrap ran")
-
--- Expected "Out of memory"; the demo's REMOVE is deliberately oversized.
-enter("REMOVE NSR,&H60000000,&H3FFFFFFF")
-log("REMOVE issued")
-
--- "DIST BOOT READY" stays on screen, so the screen is still labelled
--- "loaded"; the status line is what proves we are back at the prompt.
-if not at_prompt(10) then
-  give_up("REMOVE failed - not back in Direct mode")
-  return
+-- -> "host connected", "boot failed" or nil (neither showed up).
+local function connect_outcome()
+  local outcome = expect_any("host connected", "boot failed", 10)
+  if outcome == "host connected" then log("Console connected") end
+  return outcome
 end
 
-enter(start)
-local outcome = expect_any("host connected", "boot failed", 10)
+type('LOAD "TXT:NS2"\n' .. pause(LOAD_MS) .. "RUN\n" .. pause(RUN_MS) ..
+     "REMOVE NSR,&H60000000,&H3FFFFFFF\n" .. pause(250) .. start .. "\n")
+log("LOAD / RUN / REMOVE / START typed")
+local outcome = connect_outcome()
+
+-- Fallback: step by step, waiting at each prompt. Reached when a keystroke
+-- landed somewhere else: LOAD's "load the file?" dialog (unsaved program), or
+-- a bootstrap slower than SV_NS2_RUN_MS (REMOVE / START typed while it ran).
+if outcome == nil then
+  log("one-shot did not connect - retrying step by step")
+  if expect("load the file", 1) then tap("A"); sleep(1.5) end
+  if not find("dist boot ready") then
+    enter('LOAD "TXT:NS2"')
+    if expect("load the file", 8) then
+      tap("A")
+      sleep(1.5)
+    end
+    if not at_prompt(20) then
+      give_up("LOAD failed - not back in Direct mode")
+      return
+    end
+    log("NS2 loaded")
+    enter("RUN")
+    if not expect("dist boot ready", 25) then
+      give_up("No DIST BOOT READY - is NS2 the current program?")
+      return
+    end
+    log("Bootstrap ran")
+  end
+  -- Expected "Out of memory"; the demo's REMOVE is deliberately oversized.
+  enter("REMOVE NSR,&H60000000,&H3FFFFFFF")
+  log("REMOVE issued")
+  if not at_prompt(10) then
+    give_up("REMOVE failed - not back in Direct mode")
+    return
+  end
+  enter(start)
+  outcome = connect_outcome()
+end
 if outcome == "boot failed" then
   give_up("BOOT FAILED - check the host address, then restart SmileBASIC")
   return
-elseif outcome == "host connected" then
-  log("Console connected")
 end
 
 if not run_dir then
