@@ -718,16 +718,18 @@ int panel_event(struct panel *p, const SDL_Event *e, const SDL_Rect *area)
         size_t n = strlen(p->text);
         if (n) p->text[n - 1] = 0;
         if (p->live) queue_submit(p, "\b");
-      } else if (k == SDLK_v && (e->key.keysym.mod & KMOD_CTRL)) {
+      } else if (k == SDLK_v && (e->key.keysym.mod & (KMOD_CTRL | KMOD_GUI))) {
         char *clip = SDL_GetClipboardText();
         if (clip) { type_chars(p, clip, 0); SDL_free(clip); }
       }
       return 1;
     }
-    // Copy the highlighted log rows (Cmd+C on mac, Ctrl+C elsewhere).
-    if (down && k == SDLK_c && (e->key.keysym.mod & (KMOD_GUI | KMOD_CTRL)) && p->sel_a >= 0) {
-      copy_selection(p);
-      return 1;
+    // Edit-menu shortcuts over the log box (Cmd on mac, Ctrl elsewhere). Handle
+    // them here so they never fall through to a pad key binding.
+    if (down && (e->key.keysym.mod & (KMOD_GUI | KMOD_CTRL))) {
+      if (k == SDLK_c) { if (p->sel_a >= 0) copy_selection(p); return 1; }
+      if (k == SDLK_a) { if (p->disp_n > 0) { p->sel_a = 0; p->sel_b = p->disp_n - 1; } return 1; }
+      if (k == SDLK_v) return 1;  // paste only means something in the text box
     }
     if (e->key.repeat) return 1;
     if (k == SDLK_RETURN && !down) { set_focus(p, 1); return 1; }

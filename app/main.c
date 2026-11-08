@@ -140,6 +140,10 @@ int main(int argc, char **argv)
       SDL_FreeSurface(icon);
     }
   }
+#ifdef __APPLE__
+  extern void macos_menubar_install(void);  // app/menubar.m
+  macos_menubar_install();
+#endif
   SDL_RendererInfo ri;
   SDL_GetRendererInfo(ren, &ri);
   {

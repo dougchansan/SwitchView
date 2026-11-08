@@ -16,7 +16,7 @@ ifeq ($(UNAME_S),Darwin)
   # Video comes from AVFoundation, audio from SDL's CoreAudio backend.
   # OCR is Apple Vision in-process (app/ocr_vision.m); no Tesseract needed.
   PKGS = sdl2 SDL2_ttf lua5.4 $(FFMPEG_PKGS)
-  OBJS = app/main.o $(CAPTURE_OBJS) app/capture_macos.o app/panel.o app/link.o app/ocr_vision.o app/script.o $(COMMON)
+  OBJS = app/main.o $(CAPTURE_OBJS) app/capture_macos.o app/panel.o app/link.o app/ocr_vision.o app/script.o app/menubar.o $(COMMON)
   LIBS = $(shell pkg-config --libs $(PKGS)) -framework AVFoundation -framework CoreMedia \
          -framework CoreVideo -framework Foundation -framework Vision -framework CoreGraphics -lpthread
   PLATFORM_CFLAGS = -mmacosx-version-min=14.0
