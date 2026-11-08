@@ -331,9 +331,15 @@ static long read_file(struct conn *c, const char *path, char *buf, size_t cap)
 // layout line back at SV_FLIPPER_LAYOUT (default en-UK; "keep" = leave it).
 static int ensure_layout(struct conn *c)
 {
+  // Reading the settings file costs a storage round trip on every job, but the
+  // layout only changes across a Flipper reboot (rare, and a relaunch re-checks).
+  // So verify once per process and skip the read after; SV_FLIPPER_LAYOUT=recheck
+  // forces it every job if a reboot is suspected.
+  static int verified = 0;
   const char *want = getenv("SV_FLIPPER_LAYOUT");
   if (!want || !*want) want = "en-UK";
   if (!strcmp(want, "keep")) return 0;
+  if (verified && strcmp(want, "recheck")) return 0;
   char cur[4096], line[160];
   long n = read_file(c, SETTINGS, cur, sizeof cur);
   if (n <= 0) return 0;  // no settings file: Bad KB uses its default; nothing to patch
@@ -343,12 +349,14 @@ static int ensure_layout(struct conn *c)
   at++;
   char *eol = strchr(at, '\n');
   size_t ln = eol ? (size_t)(eol - at) : strlen(at);
-  if (ln == strlen(line) && !strncmp(at, line, ln)) return 0;  // already right
+  if (ln == strlen(line) && !strncmp(at, line, ln)) { verified = 1; return 0; }  // already right
   char out[4300];
   int k = snprintf(out, sizeof out, "%.*s%s%s", (int)(at - cur), cur, line, eol ? eol : "\n");
   if (k <= 0 || (size_t)k >= sizeof out) return 0;
   fprintf(stderr, "flipper: Bad KB layout was '%.*s'; setting %s\n", (int)ln, at, want);
-  return upload(c, SETTINGS, (const uint8_t *)out, (size_t)k);
+  int r = upload(c, SETTINGS, (const uint8_t *)out, (size_t)k);
+  if (!r) verified = 1;
+  return r;
 }
 
 /* ---------------- script ---------------- */
@@ -440,14 +448,24 @@ long flipper_type(const char *host, int port, const char *text, size_t len, char
   if (c.fd < 0) { free(s.p); fail(&c, "cannot connect to the Flipper bridge"); return -1; }
   long rc = -1;
   struct pb st = {0};
+  // Spin-up timings (to stderr -> switchview.log): where the gap before the
+  // first keystroke goes. lead-in is SV_FLIPPER_START_MS, inside the script.
+  long t0 = mono_ms(), t_lock, t_layout, t_up, t_start;
   if (app_locked(&c) == 1) { fail(&c, "an app is open on the Flipper; return it to the desktop"); goto out; }
+  t_lock = mono_ms();
   if (ensure_layout(&c)) goto out;
+  t_layout = mono_ms();
   if (upload(&c, REMOTE, (const uint8_t *)s.p, s.n)) goto out;
+  t_up = mono_ms();
   pb_blob(&st, 1, "Bad KB", 6);
   pb_blob(&st, 2, REMOTE, strlen(REMOTE));
   if (request(&c, F_APP_START, st.p, st.n, NULL)) goto out;
   usleep((useconds_t)env_int("SV_FLIPPER_LOAD_MS", 650, 200, 10000) * 1000);  // Bad KB loads the script first
   if (input(&c, KEY_OK)) goto out;
+  t_start = mono_ms();
+  fprintf(stderr, "flipper: spin-up %ldms before typing (lock %ld, layout %ld, upload %ld [%zuB], badkb %ld) + lead-in %dms\n",
+          t_start - t0, t_lock - t0, t_layout - t_lock, t_up - t_layout, s.n, t_start - t_up,
+          env_int("SV_FLIPPER_START_MS", 900, 300, 15000));
   {
     // Wait the script's own duration plus parser/USB overhead, then leave.
     // Bad KB starts typing ~1.5 s later than its DELAYs add up to (measured on
